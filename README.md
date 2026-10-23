@@ -22,7 +22,7 @@ ADR-0004 把 TypeScript 定为 Go 之后的第二个 SDK：对接 XiHan.UI 与 M
 
 ## 包名
 
-npm scope `@xihan-framework`：`@xihan-framework/primitives`、`@xihan-framework/plugin` 等。领域词与规范术语表（`conventions/vocabulary.md`）一致，只换本语言的大小写风格。
+npm 组织 `xihan-framework` 已注册（2026-10-23），scope 下的包名只有组织成员能发布，不需要占位发布。npm scope `@xihan-framework`：`@xihan-framework/primitives`、`@xihan-framework/plugin` 等。领域词与规范术语表（`conventions/vocabulary.md`）一致，只换本语言的大小写风格。
 
 ## 成熟度
 
