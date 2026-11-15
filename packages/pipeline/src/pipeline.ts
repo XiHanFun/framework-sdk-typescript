@@ -95,7 +95,7 @@ interface Registration {
   readonly order: number;
 }
 
-/** 一条顺序约束：first 在 second 之前，都按类型名 */
+/** 一条顺序约束：first 在 second 之前，都是中间件名（实例名或类型名） */
 interface Constraint {
   readonly first: string;
   readonly second: string;
@@ -106,7 +106,7 @@ interface Constraint {
  *
  * @remarks
  * 排序：先阶段；阶段内先位置（Beginning 在前），再归属的码元序，再登记顺序；最后按约束做稳定拓扑排序。
- * 登记时只核对参数，约束目标在排序时（`describe`、`dump`、`build`）解析，错误以 {@link FrameworkError} 抛出
+ * 登记时核对参数，约束的主体在声明时必须已登记，目标在排序时（`describe`、`dump`、`build`）解析，错误以 {@link FrameworkError} 抛出
  */
 export class PipelineBuilder {
   readonly #registrations: Registration[] = [];
@@ -149,19 +149,36 @@ export class PipelineBuilder {
   }
 
   /**
-   * 约束 `middleware` 在 `other` 之前；都按类型名，目标在排序时解析
+   * 约束 `middleware` 在 `other` 之前
+   *
+   * @remarks
+   * 两端都是中间件名：命名实例的实例名，或类型名（RFC-0004 排序规则第 7 条）。约束主体 `middleware` 在声明时必须已登记；
+   * 目标 `other` 在排序时解析，未登记、对应多个中间件或不在同一阶段都是 `KERNEL_PIPELINE_003`
+   *
+   * @throws {@link FrameworkError} 主体还没有登记时，码为 `KERNEL_PIPELINE_003`
    */
   before(middleware: string, other: string): this {
+    this.#checkSubject(middleware);
     this.#constraints.push({ first: middleware, second: other });
     return this;
   }
 
   /**
-   * 约束 `middleware` 在 `other` 之后；都按类型名，目标在排序时解析
+   * 约束 `middleware` 在 `other` 之后；名字的解析与 {@link PipelineBuilder.before} 相同
+   *
+   * @throws {@link FrameworkError} 主体还没有登记时，码为 `KERNEL_PIPELINE_003`
    */
   after(middleware: string, other: string): this {
+    this.#checkSubject(middleware);
     this.#constraints.push({ first: other, second: middleware });
     return this;
+  }
+
+  /** 约束主体在声明时必须已登记；有歧义的名字留到排序时与目标一起报 */
+  #checkSubject(name: string): void {
+    if (matching(this.#registrations, name).length === 0) {
+      throw registrationError(`The middleware '${name}' must be registered before it declares an ordering constraint.`);
+    }
   }
 
   /**
@@ -241,16 +258,10 @@ export class PipelineBuilder {
   /** 按规则排序：先阶段；阶段内先位置，再归属，再登记顺序，最后按约束做稳定拓扑排序 */
   #sorted(): Registration[] {
     this.#checkDuplicates();
-    const byType = new Map<string, Registration[]>();
-    for (const registration of this.#registrations) {
-      const list = byType.get(registration.descriptor.middleware) ?? [];
-      list.push(registration);
-      byType.set(registration.descriptor.middleware, list);
-    }
-    // 约束按类型名引用：未登记、有多个实例、跨阶段都是登记错误
+    // 约束按中间件名引用（实例名或类型名）：未登记、对应多个中间件、跨阶段都是登记错误
     const resolved: [Registration, Registration][] = this.#constraints.map(({ first, second }) => {
-      const before = single(byType, first);
-      const after = single(byType, second);
+      const before = single(this.#registrations, first);
+      const after = single(this.#registrations, second);
       if (before.descriptor.stage !== after.descriptor.stage) {
         throw registrationError(`The ordering constraint between '${first}' and '${second}' crosses stages.`);
       }
@@ -304,18 +315,29 @@ function compareBase(left: Registration, right: Registration): number {
   return left.order - right.order;
 }
 
-/** 按类型名取唯一的登记；没有或有多个实例都是登记错误 */
-function single(byType: ReadonlyMap<string, Registration[]>, name: string): Registration {
-  const registrations = byType.get(name) ?? [];
-  if (registrations.length === 0) {
+/**
+ * 名字对应的登记：实例名等于它的命名实例，与类型名等于它的登记
+ *
+ * @remarks
+ * 只登记了一次的类型按类型名也能指到（含只有一个命名实例的）；同一类型有多个实例时按类型名会指到多个
+ */
+function matching(registrations: readonly Registration[], name: string): Registration[] {
+  return registrations.filter(({ descriptor }) => descriptor.instance === name || descriptor.middleware === name);
+}
+
+/** 按名字取唯一的登记；没有或对应多个中间件都是登记错误 */
+function single(registrations: readonly Registration[], name: string): Registration {
+  const found = matching(registrations, name);
+  if (found.length === 0) {
     throw registrationError(`The ordering constraint references the unregistered middleware '${name}'.`);
   }
-  if (registrations.length > 1) {
+  if (found.length > 1) {
+    const displays = found.map((registration) => registration.descriptor.display).join(', ');
     throw registrationError(
-      `The middleware '${name}' has several named instances; ordering constraints by type are ambiguous.`,
+      `The name '${name}' refers to several middleware (${displays}); ordering constraints by it are ambiguous.`,
     );
   }
-  return registrations[0] as Registration;
+  return found[0] as Registration;
 }
 
 /**

@@ -247,3 +247,43 @@ test('中间件把派生的上下文交给下游；已构建的管道不受之�
   assert.deepEqual(seen, ['t1']);
   assert.equal(builder.describe().length, 2);
 });
+
+test('次序约束可以按实例名声明，主体在声明时必须已登记', () => {
+  const builder = new PipelineBuilder()
+    .useNamedInstance('guard-a', noop('Guard'), PipelineStage.Observe, Placement.End, 'xihan.plugins.a')
+    .useNamedInstance('guard-b', noop('Guard'), PipelineStage.Observe, Placement.End, 'xihan.plugins.b')
+    .useAt(noop('Audit'), PipelineStage.Observe, Placement.End, 'app')
+    .after('guard-a', 'guard-b')
+    .before('Audit', 'guard-b');
+  assert.equal(builder.dump(), 'observe      Audit\nobserve      Guard[guard-b]\nobserve      Guard[guard-a]\n');
+
+  // 主体没有登记：声明时就报，不等到排序
+  assert.equal(
+    codeOf(() => new PipelineBuilder().before('Missing', 'Other')),
+    PipelineErrorCode.Registration,
+  );
+  assert.throws(() => new PipelineBuilder().useAt(noop('A'), PipelineStage.Validate).after('Missing', 'A'), {
+    message: "The middleware 'Missing' must be registered before it declares an ordering constraint.",
+  });
+
+  // 只登记一次的类型按类型名也能指到，即使它是命名实例
+  const single = new PipelineBuilder()
+    .useNamedInstance('only', noop('Lonely'), PipelineStage.Validate)
+    .useAt(noop('First'), PipelineStage.Validate)
+    .before('Lonely', 'First');
+  assert.deepEqual(
+    single.describe().map((descriptor) => descriptor.display),
+    ['Lonely[only]', 'First'],
+  );
+
+  // 同一个名字既是实例名又是另一个类型名：有歧义
+  const clash = new PipelineBuilder()
+    .useNamedInstance('Audit', noop('Guard'), PipelineStage.Observe)
+    .useAt(noop('Audit'), PipelineStage.Observe)
+    .useAt(noop('Trace'), PipelineStage.Observe)
+    .before('Trace', 'Audit');
+  assert.throws(() => clash.describe(), {
+    message:
+      "The name 'Audit' refers to several middleware (Guard[Audit], Audit); ordering constraints by it are ambiguous.",
+  });
+});
