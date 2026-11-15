@@ -134,6 +134,8 @@ test('截止时间的边界：已过期、超出定时器范围', async () => {
   const past = InvocationContext.create({ deadline: Date.now() - 1 });
   assert.ok(past.signal.aborted, 'a deadline in the past aborts at once');
   assert.equal(past.cancellation?.code, InvocationErrorCode.DeadlineExceeded);
+  assert.equal(past.cancellation?.messageKey, InvocationMessageKey.DeadlineBeforeStart);
+  assert.equal(past.cancellation?.message, 'The invocation exceeded its deadline before it started.');
 
   // 超出定时器范围的截止时间不起定时器，调用期间不会到期，但按时钟仍可判断过期
   const far = Date.now() + 40 * 24 * 60 * 60 * 1000;
@@ -244,4 +246,28 @@ test('把任意取消信号翻译成原语层错误', () => {
     InvocationErrorCode.DeadlineExceeded,
   );
   assert.equal(cancellationOf(AbortSignal.abort(new Error('boom')))?.code, InvocationErrorCode.Cancelled);
+});
+
+test('上下文的错误码与消息键与内核错误向量一致', () => {
+  const url = new URL('../../../spec/conformance/vectors/primitives/kernel-messages.json', import.meta.url);
+  const { messages } = JSON.parse(readFileSync(url, 'utf8')) as {
+    messages: { code: string; key: string; arguments: string[]; template: string }[];
+  };
+  const expected = [
+    [InvocationErrorCode.DeadlineExceeded, InvocationMessageKey.DeadlineExceeded],
+    [InvocationErrorCode.DeadlineExceeded, InvocationMessageKey.DeadlineBeforeStart],
+    [InvocationErrorCode.Cancelled, InvocationMessageKey.Cancelled],
+  ];
+  for (const [code, key] of expected) {
+    const entry = messages.find((message) => message.key === key);
+    assert.ok(entry, `${key} is in the vector`);
+    assert.equal(entry.code, code);
+    assert.deepEqual(entry.arguments, [], 'the invocation errors take no arguments');
+  }
+  // 没有配置目录时，错误的消息就是向量里的 en-US 模板
+  const cancelled = cancellationOf(AbortSignal.abort());
+  assert.equal(
+    cancelled?.message,
+    messages.find((message) => message.key === InvocationMessageKey.Cancelled)?.template,
+  );
 });

@@ -26,6 +26,8 @@ export const InvocationErrorCode = Object.freeze({
 export const InvocationMessageKey = Object.freeze({
   /** 超时 */
   DeadlineExceeded: 'kernel.invocation.deadline_exceeded',
+  /** 调用开始时截止时间已过 */
+  DeadlineBeforeStart: 'kernel.invocation.deadline_before_start',
   /** 取消 */
   Cancelled: 'kernel.invocation.cancelled',
 } as const);
@@ -34,6 +36,10 @@ export const InvocationMessageKey = Object.freeze({
 const maxTimerDelay = 2_147_483_647;
 
 const deadlineExceeded = ErrorInfo.timeout(InvocationErrorCode.DeadlineExceeded, InvocationMessageKey.DeadlineExceeded);
+const deadlineBeforeStart = ErrorInfo.timeout(
+  InvocationErrorCode.DeadlineExceeded,
+  InvocationMessageKey.DeadlineBeforeStart,
+);
 const cancelled = ErrorInfo.cancelled(InvocationErrorCode.Cancelled, InvocationMessageKey.Cancelled);
 
 /** 只在类型层面区分条目值的类型 */
@@ -91,6 +97,8 @@ interface State {
   readonly signal: AbortSignal;
   /** 截止时间自己的信号：归因只看它是否已触发（RFC-0004「Resilience 阶段」） */
   readonly deadlineSignal: AbortSignal | undefined;
+  /** 创建时截止时间已过：这次调用还没开始就超时了 */
+  readonly expiredAtStart: boolean;
   readonly deadline: number | undefined;
   readonly traceId: string;
   readonly spanId: string;
@@ -136,12 +144,14 @@ export class InvocationContext {
       throw invalid('The deadline of an invocation context must be a finite number of milliseconds.');
     }
     const trace = resolveTrace(options);
-    const deadlineSignal = deadline === undefined ? undefined : timerSignal(deadline - Date.now());
+    const delay = deadline === undefined ? undefined : deadline - Date.now();
+    const deadlineSignal = delay === undefined ? undefined : timerSignal(delay);
     const signals = [options.signal, deadlineSignal].filter((signal) => signal !== undefined);
     return new InvocationContext({
       // 截止时间与取消并存：任一触发都中止这次调用（RFC-0003 第 1 条）
       signal: signals.length > 1 ? AbortSignal.any(signals) : (signals[0] ?? new AbortController().signal),
       deadlineSignal,
+      expiredAtStart: delay !== undefined && delay <= 0,
       deadline,
       ...trace,
       baggage: copyBaggage(options.baggage ?? {}),
@@ -306,11 +316,12 @@ export class InvocationContext {
    *
    * @remarks
    * 截止时间已触发即 `KERNEL_TIMEOUT_001`，调用方同时取消也一样（RFC-0003 第 1 条、RFC-0004「Resilience 阶段」）；
+   * 创建上下文时截止时间已过的，消息键是 `kernel.invocation.deadline_before_start`，否则是 `kernel.invocation.deadline_exceeded`。
    * 截止时间没有触发而调用方已取消为 `KERNEL_CANCELLED_001`。只看信号，不读时钟
    */
   get cancellation(): ErrorInfo | undefined {
     if (this.#state.deadlineSignal?.aborted === true) {
-      return deadlineExceeded;
+      return this.#state.expiredAtStart ? deadlineBeforeStart : deadlineExceeded;
     }
     return cancellationOf(this.#state.signal);
   }
