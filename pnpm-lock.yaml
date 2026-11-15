@@ -18,6 +18,12 @@ importers:
         specifier: 5.8.3
         version: 5.8.3
 
+  packages/manifest:
+    dependencies:
+      '@xihan-framework/primitives':
+        specifier: workspace:*
+        version: link:../primitives
+
   packages/primitives: {}
 
 packages:

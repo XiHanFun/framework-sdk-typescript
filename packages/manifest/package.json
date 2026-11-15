@@ -1,0 +1,36 @@
+{
+  "name": "@xihan-framework/manifest",
+  "version": "0.1.0",
+  "description": "XiHan Framework 清单 xihan.manifest.json 的模型、读取、规范化输出与校验",
+  "license": "MIT",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/XiHanFun/framework-sdk-typescript.git",
+    "directory": "packages/manifest"
+  },
+  "homepage": "https://framework.docs.xihanfun.com",
+  "exports": {
+    ".": {
+      "xihan-source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./node": {
+      "xihan-source": "./src/node.ts",
+      "types": "./dist/node.d.ts",
+      "default": "./dist/node.js"
+    }
+  },
+  "files": [
+    "dist",
+    "!dist/.tsbuildinfo"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@xihan-framework/primitives": "workspace:*"
+  }
+}
