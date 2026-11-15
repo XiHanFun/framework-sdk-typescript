@@ -1,0 +1,51 @@
+name: CI
+
+# TypeScript SDK 的门禁：格式与静态检查、构建与类型检查、全部测试（含读取规范子模块里的一致性向量）。
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: 构建与测试
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: 检出（含规范 submodule）
+        uses: actions/checkout@v5
+        with:
+          submodules: true
+
+      - name: 安装 pnpm
+        # 版本取 package.json 的 packageManager
+        uses: pnpm/action-setup@v4
+
+      - name: 安装 Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: 安装依赖
+        run: pnpm install --frozen-lockfile
+
+      - name: 格式与静态检查
+        run: pnpm check
+
+      - name: 构建与类型检查
+        run: pnpm typecheck
+
+      - name: 测试
+        run: pnpm test
