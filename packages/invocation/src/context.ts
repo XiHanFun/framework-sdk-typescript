@@ -30,6 +30,8 @@ export const InvocationMessageKey = Object.freeze({
   DeadlineBeforeStart: 'kernel.invocation.deadline_before_start',
   /** 取消 */
   Cancelled: 'kernel.invocation.cancelled',
+  /** 调用期间发生未处理的异常（KERNEL_UNEXPECTED_001，没有参数） */
+  UnhandledException: 'kernel.invocation.unhandled_exception',
 } as const);
 
 /** 定时器能表示的最长延迟（2^31 - 1 毫秒，约 24.8 天）；更长的延迟 Node 会改成 1 毫秒立即触发 */

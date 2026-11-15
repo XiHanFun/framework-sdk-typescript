@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 
-import { InvocationContext } from '@xihan-framework/invocation';
+import { InvocationContext, InvocationMessageKey } from '@xihan-framework/invocation';
 import {
   defineContract,
   Expose,
@@ -366,4 +366,72 @@ test('操作错误的码、键与参数与内核错误向量一致', async () =>
     assert.deepEqual(Object.keys(details ?? {}).sort(), [...expected.arguments].sort(), messageKey);
     assert.equal(message, formatMessage(expected.template, details), messageKey);
   }
+});
+
+test('抛出的异常翻译为失败：未处理的是 KERNEL_UNEXPECTED_001，中止按取消归因', async () => {
+  const registry = new OperationRegistry();
+  const contract = defineContract<{ readonly mode: string }, string>({ id: 'faults.raise', expose: [] });
+  registry.add({
+    contract,
+    decode: (value) => {
+      if (!isPlainObject(value) || typeof value.mode !== 'string') {
+        throw new RequestDecodeError('$.mode');
+      }
+      return { mode: value.mode };
+    },
+    handler: async (context, request) => {
+      switch (request.mode) {
+        case 'framework':
+          throw new FrameworkError('FAULTS_VALIDATION_001', 'The fault is configured wrong.');
+        case 'abort':
+          // 像 fetch 一样：信号中止后抛出它的原因
+          await new Promise((resolve) => setTimeout(resolve, 30));
+          context.signal.throwIfAborted();
+          return Result.ok('late');
+        default:
+          throw new TypeError('secret detail that must not go on the wire');
+      }
+    },
+  });
+  const invoker = new OperationInvoker(registry);
+
+  const plain = await invoker.invoke(InvocationContext.create(), { id: 'faults.raise', payload: '{"mode":"plain"}' });
+  assert.ok(!plain.outcome.ok);
+  assert.equal(plain.outcome.error.code, OperationErrorCode.Unexpected);
+  assert.equal(plain.outcome.error.messageKey, InvocationMessageKey.UnhandledException);
+  assert.equal(plain.outcome.error.message, 'An unhandled exception occurred during the invocation.');
+  assert.equal(plain.outcome.error.inner, undefined, 'the exception message stays off the wire');
+  assert.ok(!JSON.stringify(plain.outcome).includes('secret'));
+
+  const framework = await invoker.invokeTyped(InvocationContext.create(), contract, { mode: 'framework' });
+  assert.ok(!framework.ok);
+  assert.equal(framework.error.code, OperationErrorCode.Unexpected);
+  assert.equal(framework.error.inner?.code, 'FAULTS_VALIDATION_001', 'a FrameworkError rides along as the inner error');
+
+  const caller = new AbortController();
+  const pending = invoker.invoke(InvocationContext.create({ signal: caller.signal }), {
+    id: 'faults.raise',
+    payload: '{"mode":"abort"}',
+  });
+  caller.abort();
+  const cancelled = await pending;
+  assert.ok(!cancelled.outcome.ok);
+  assert.equal(cancelled.outcome.error.code, 'KERNEL_CANCELLED_001');
+
+  const timedOut = await invoker.invokeTyped(InvocationContext.create({ timeout: 5 }), contract, { mode: 'abort' });
+  assert.ok(!timedOut.ok);
+  assert.equal(timedOut.error.code, 'KERNEL_TIMEOUT_001');
+
+  // 中间件抛出同样翻译
+  const failing = new OperationInvoker(
+    registry,
+    new PipelineBuilder().useAt(
+      middleware('Broken', async () => {
+        throw new RangeError('boom');
+      }),
+      PipelineStage.Observe,
+    ),
+  );
+  const broken = await failing.invoke(InvocationContext.create(), { id: 'faults.raise', payload: '{"mode":"plain"}' });
+  assert.equal(codeOf(broken.outcome), OperationErrorCode.Unexpected);
 });

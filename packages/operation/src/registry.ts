@@ -42,7 +42,7 @@ export interface OperationResponse {
 }
 
 /**
- * 处理一个操作：可恢复失败经 Result 返回，不抛异常
+ * 处理一个操作：可恢复失败经 Result 返回，不抛异常；抛出的异常由调用器翻译为 `KERNEL_UNEXPECTED_001`
  */
 export type OperationHandler<Req, Res> = (context: InvocationContext, request: Req) => Promise<Result<Res>>;
 

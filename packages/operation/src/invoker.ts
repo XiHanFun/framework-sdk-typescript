@@ -1,4 +1,4 @@
-import { type InvocationContext, ItemKey } from '@xihan-framework/invocation';
+import { type InvocationContext, InvocationMessageKey, ItemKey } from '@xihan-framework/invocation';
 import { PipelineBuilder, type Step } from '@xihan-framework/pipeline';
 import { ErrorCode, ErrorInfo, FrameworkError, Result } from '@xihan-framework/primitives';
 
@@ -63,11 +63,39 @@ export class OperationInvoker {
   }
 
   /**
+   * 执行管道，把抛出的异常翻译成失败（RFC-0011 规则 5）
+   *
+   * @remarks
+   * 中止异常（调用的信号已触发、抛出的是它的原因或 AbortError / TimeoutError）按上下文的取消归因，
+   * 截止时间已触发即 `KERNEL_TIMEOUT_001`；其余异常是 `KERNEL_UNEXPECTED_001` + `kernel.invocation.unhandled_exception`，
+   * 与 .NET 的 Observe 阶段一样只在 FrameworkError 时带内部错误，不把异常消息写上线
+   */
+  async #run(context: InvocationContext): Promise<Result<void>> {
+    try {
+      return await this.#step(context);
+    } catch (error) {
+      const cancellation = context.cancellation;
+      if (cancellation !== undefined && isAbort(error, context.signal)) {
+        return Result.fail(cancellation);
+      }
+      return Result.fail(
+        ErrorInfo.unexpected(
+          OperationErrorCode.Unexpected,
+          InvocationMessageKey.UnhandledException,
+          undefined,
+          error instanceof FrameworkError ? error.toErrorInfo() : undefined,
+        ),
+      );
+    }
+  }
+
+  /**
    * 执行一个 XGI 请求
    *
    * @remarks
    * 未登记返回 `KERNEL_NOTFOUND_001`，不进管道；否则经完整管道执行。管道以成功结束却没有响应（中间件以成功短路）
-   * 返回 `KERNEL_UNEXPECTED_001` + `kernel.operation.no_response`（RFC-0011 规则 9）。中间件或处理器抛出的异常原样传出
+   * 返回 `KERNEL_UNEXPECTED_001` + `kernel.operation.no_response`（RFC-0011 规则 9）；中间件或处理器抛出的异常翻译为失败，
+   * 不抛出（规则 5）
    */
   async invoke(context: InvocationContext, request: OperationRequest): Promise<OperationResponse> {
     const descriptor = this.registry.find(request.id);
@@ -81,7 +109,7 @@ export class OperationInvoker {
       }
       return response.outcome;
     });
-    const outcome = await this.#step(context);
+    const outcome = await this.#run(context);
     if (!outcome.ok) {
       return { outcome, payload: undefined };
     }
@@ -96,7 +124,8 @@ export class OperationInvoker {
    *
    * @remarks
    * 要用登记时的同一份契约：契约不是登记的那一份返回 `KERNEL_VALIDATION_002`，未登记返回 `KERNEL_NOTFOUND_001`。
-   * 中间件以成功短路、处理器没有执行时，没有响应可交，返回 `KERNEL_UNEXPECTED_001` + `kernel.operation.no_response`（RFC-0011 规则 9）
+   * 中间件以成功短路、处理器没有执行时，没有响应可交，返回 `KERNEL_UNEXPECTED_001` + `kernel.operation.no_response`（RFC-0011 规则 9）；
+   * 抛出的异常同 {@link OperationInvoker.invoke} 翻译为失败
    */
   async invokeTyped<Req, Res>(
     context: InvocationContext,
@@ -123,7 +152,7 @@ export class OperationInvoker {
       result = (await handler(current, request)) as Result<Res>;
       return result.toVoid();
     });
-    const outcome = await this.#step(context);
+    const outcome = await this.#run(context);
     if (!outcome.ok) {
       return Result.fail(outcome.error);
     }
@@ -169,4 +198,13 @@ async function dispatch(context: InvocationContext): Promise<Result<void>> {
     );
   }
   return terminal(context);
+}
+
+/** 判断抛出的异常是不是这次调用的中止：信号的原因本身，或名为 AbortError / TimeoutError 的错误 */
+function isAbort(error: unknown, signal: AbortSignal): boolean {
+  if (error === signal.reason) {
+    return true;
+  }
+  const name = typeof error === 'object' && error !== null ? (error as { name?: unknown }).name : undefined;
+  return name === 'AbortError' || name === 'TimeoutError';
 }
