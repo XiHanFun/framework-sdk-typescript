@@ -1,0 +1,28 @@
+{
+  "name": "@xihan-framework/primitives",
+  "version": "0.1.0",
+  "description": "XiHan Framework 原语层：错误与错误码、Result、Maybe、类型化标识、生命周期、管道阶段、稳定性、Baggage 键与消息",
+  "license": "MIT",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/XiHanFun/framework-sdk-typescript.git",
+    "directory": "packages/primitives"
+  },
+  "homepage": "https://framework.docs.xihanfun.com",
+  "exports": {
+    ".": {
+      "xihan-source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "!dist/.tsbuildinfo"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=22"
+  }
+}
