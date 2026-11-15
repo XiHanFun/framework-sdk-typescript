@@ -1,5 +1,8 @@
+import { builtInMessages } from './built-in-messages.ts';
 import { ErrorCode, isErrorCode } from './error-code.ts';
 import { ErrorInfo } from './error-info.ts';
+import { freezeJsonObject, type JsonObject } from './json.ts';
+import { describe, isMessageKey } from './messages.ts';
 
 /**
  * 框架信息（RFC-0001 FrameworkInfo）
@@ -20,6 +23,16 @@ export const FrameworkInfo = Object.freeze({
 } as const);
 
 /**
+ * {@link FrameworkError} 的选项
+ */
+export interface FrameworkErrorOptions extends ErrorOptions {
+  /** 消息键：与宿主共用的错误（如操作 ID 重复登记）带上它，接收方可以按自己的目录翻译 */
+  readonly messageKey?: string;
+  /** 模板参数 */
+  readonly details?: JsonObject;
+}
+
+/**
  * 配置或编程错误（RFC-0001 FrameworkException）
  *
  * @remarks
@@ -31,27 +44,47 @@ export class FrameworkError extends Error {
   override readonly name = 'FrameworkError';
   /** 错误码 `<领域大写>_<KIND>_<NNN>` */
   readonly code: string;
+  /** 消息键；只有与宿主共用的错误才有 */
+  readonly messageKey: string | undefined;
+  /** 模板参数；只有与宿主共用的错误才有 */
+  readonly details: JsonObject | undefined;
 
   /**
    * 创建配置或编程错误
    *
    * @param code - 错误码
    * @param message - 面向开发者的英文句子，标识符加单引号
-   * @param options - 可带底层原因 `cause`
+   * @param options - 可带底层原因 `cause`，以及与宿主共用的消息键与参数
    */
-  constructor(code: string, message: string, options?: ErrorOptions) {
+  constructor(code: string, message: string, options?: FrameworkErrorOptions) {
     super(message, options);
     this.code = code;
+    this.messageKey = options?.messageKey;
+    this.details = options?.details === undefined ? undefined : freezeJsonObject(options.details, 'details');
   }
 
   /**
-   * 转成可上线的 {@link ErrorInfo}：没有消息键，文案就是本错误的消息
+   * 用消息键与参数创建：消息是 SDK 自带的英文模板填入参数（RFC-0011「错误码」）
    *
    * @remarks
-   * 码不合法时用 `PRIMITIVES_VALIDATION_001`，与 Go SDK 的 `ToError` 一致
+   * 配置期与宿主共用的错误（操作 ID 重复登记、登记表已满）以它抛出，码、键与参数与宿主一致
+   */
+  static fromMessage(code: string, messageKey: string, details?: JsonObject): FrameworkError {
+    const message = builtInMessages.resolve(messageKey, 'en-US', details) ?? describe(messageKey, details);
+    return new FrameworkError(code, message, details === undefined ? { messageKey } : { messageKey, details });
+  }
+
+  /**
+   * 转成可上线的 {@link ErrorInfo}
+   *
+   * @remarks
+   * 有消息键时带上键与参数，文案就是本错误的消息；没有时是 Literal。码不合法时用 `PRIMITIVES_VALIDATION_001`，与 Go SDK 的 `ToError` 一致
    */
   toErrorInfo(): ErrorInfo {
     const code = isErrorCode(this.code) ? this.code : ErrorCode.InvalidArgument;
-    return ErrorInfo.literal(code, this.message);
+    if (this.messageKey !== undefined && isMessageKey(this.messageKey)) {
+      return ErrorInfo.create(code, this.messageKey, this.details).withText(this.message);
+    }
+    return ErrorInfo.literal(code, this.message, this.details);
   }
 }

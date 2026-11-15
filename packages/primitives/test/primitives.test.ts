@@ -4,6 +4,8 @@ import { test } from 'node:test';
 
 import {
   BaggageKey,
+  builtInMessages,
+  builtInTemplates,
   canTransition,
   describe,
   ErrorCode,
@@ -31,6 +33,7 @@ import {
   MessageCatalog,
   messageKeyDomain,
   PipelineStage,
+  PrimitivesMessageKey,
   pipelineStageOrdinal,
   pipelineStages,
   placeholders,
@@ -309,6 +312,44 @@ test('消息键、模板格式化与 Describe 遵循向量', () => {
   for (const c of vectors.describe) {
     assert.equal(describe(c.key, c.arguments ?? undefined), c.text, c.key);
   }
+});
+
+test('自带的英文模板与内核错误向量逐字相同', () => {
+  const vectors = vector<{ messages: { code: string; key: string; arguments: string[]; template: string }[] }>(
+    'kernel-messages.json',
+  );
+  for (const entry of vectors.messages) {
+    assert.equal(builtInTemplates[entry.key], entry.template, entry.key);
+    assert.equal(builtInMessages.find('en-US', entry.key), entry.template);
+    assert.deepEqual(placeholders(entry.template), entry.arguments, `${entry.key} placeholders`);
+    // 没有进程默认目录时，错误的消息就是自带模板填入参数
+    const args = Object.fromEntries(entry.arguments.map((name) => [name, `<${name}>`]));
+    const error = ErrorInfo.create(entry.code, entry.key, args);
+    assert.equal(error.message, formatMessage(entry.template, args), entry.key);
+  }
+  assert.equal(PrimitivesMessageKey.UninitializedResult, 'primitives.result.uninitialized');
+  // 自带模板之外的键退回描述；进程默认目录优先于自带模板
+  assert.equal(ErrorInfo.create('ORDERS_NOTFOUND_001', 'orders.missing', { id: 1 }).message, 'orders.missing (id=1)');
+});
+
+test('FrameworkError 可以带与宿主共用的消息键与参数', () => {
+  const error = FrameworkError.fromMessage('KERNEL_OPERATION_001', 'kernel.operation.duplicate', {
+    id: 'orders.create',
+    owner: 'app',
+  });
+  assert.equal(error.message, "Operation 'orders.create' is already registered by 'app'.");
+  assert.equal(error.messageKey, 'kernel.operation.duplicate');
+  assert.deepEqual(error.details, { id: 'orders.create', owner: 'app' });
+  const info = error.toErrorInfo();
+  assert.equal(info.messageKey, 'kernel.operation.duplicate');
+  assert.equal(info.text, error.message);
+  assert.deepEqual(JSON.parse(JSON.stringify(info)), {
+    code: 'KERNEL_OPERATION_001',
+    message: "Operation 'orders.create' is already registered by 'app'.",
+    messageKey: 'kernel.operation.duplicate',
+    details: { id: 'orders.create', owner: 'app' },
+  });
+  assert.equal(FrameworkError.fromMessage('ORDERS_OPERATION_001', 'orders.unknown_key').message, 'orders.unknown_key');
 });
 
 test('错误的线上编码', () => {

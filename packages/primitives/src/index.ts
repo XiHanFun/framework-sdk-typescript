@@ -9,6 +9,7 @@
  */
 
 export { BaggageKey, isBaggageKeyRegistered, isBaggageKeyWellFormed, registeredBaggageKeys } from './baggage.ts';
+export { builtInMessages, builtInTemplates, PrimitivesMessageKey } from './built-in-messages.ts';
 export {
   ErrorCode,
   ErrorKind,
@@ -18,7 +19,7 @@ export {
   validateErrorCode,
 } from './error-code.ts';
 export { ErrorInfo, type ErrorInfoJson } from './error-info.ts';
-export { FrameworkError, FrameworkInfo } from './framework.ts';
+export { FrameworkError, type FrameworkErrorOptions, FrameworkInfo } from './framework.ts';
 export { isPlainObject, type JsonObject, type JsonPrimitive, type JsonValue } from './json.ts';
 export {
   canTransition,

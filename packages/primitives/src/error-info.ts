@@ -1,3 +1,4 @@
+import { builtInMessages } from './built-in-messages.ts';
 import { ErrorCode, ErrorKind, errorCodeDomain, errorCodeKind, invalidErrorCode, isErrorCode } from './error-code.ts';
 import { FrameworkError } from './framework.ts';
 import { freezeJsonObject, isPlainObject, type JsonObject } from './json.ts';
@@ -178,17 +179,22 @@ export class ErrorInfo {
    * 面向人的消息
    *
    * @remarks
-   * 依次取：已解析文案；按进程默认区域解析的消息键（见 {@link setDefaultMessages}）；`键 (参数)` 的描述；
-   * 既没有文案也没有键（线上还原的）时是错误码。消息不参与程序判断
+   * 依次取：已解析文案；按进程默认区域解析的消息键（见 {@link setDefaultMessages}）；SDK 自带的英文模板
+   * （{@link builtInMessages}）；`键 (参数)` 的描述。消息不参与程序判断
    */
   get message(): string {
     if (this.text !== undefined) {
       return this.text;
     }
     if (this.messageKey === undefined) {
+      // 只有文案缺失的编程错误才会走到这里：工厂与线上还原都保证有文案或有键
       return this.code;
     }
-    return resolveMessage(this.messageKey, this.details) ?? describe(this.messageKey, this.details);
+    return (
+      resolveMessage(this.messageKey, this.details) ??
+      builtInMessages.resolve(this.messageKey, 'en-US', this.details) ??
+      describe(this.messageKey, this.details)
+    );
   }
 
   /**
