@@ -1,6 +1,6 @@
 import { type InvocationContext, ItemKey } from '@xihan-framework/invocation';
 import { PipelineBuilder, type Step } from '@xihan-framework/pipeline';
-import { ErrorCode, ErrorInfo, Result } from '@xihan-framework/primitives';
+import { ErrorCode, ErrorInfo, FrameworkError, Result } from '@xihan-framework/primitives';
 
 import { type OperationContract, OperationErrorCode, OperationMessageKey } from './contract.ts';
 import {
@@ -66,7 +66,8 @@ export class OperationInvoker {
    * 执行一个 XGI 请求
    *
    * @remarks
-   * 未登记返回 `KERNEL_NOTFOUND_001`，不进管道；否则经完整管道执行。中间件或处理器抛出的异常原样传出
+   * 未登记返回 `KERNEL_NOTFOUND_001`，不进管道；否则经完整管道执行。管道以成功结束却没有响应（中间件以成功短路）
+   * 返回 `KERNEL_UNEXPECTED_001` + `kernel.operation.no_response`（RFC-0011 规则 9）。中间件或处理器抛出的异常原样传出
    */
   async invoke(context: InvocationContext, request: OperationRequest): Promise<OperationResponse> {
     const descriptor = this.registry.find(request.id);
@@ -81,7 +82,13 @@ export class OperationInvoker {
       return response.outcome;
     });
     const outcome = await this.#step(context);
-    return outcome.ok ? { outcome, payload: context.findItem(responseKey) } : { outcome, payload: undefined };
+    if (!outcome.ok) {
+      return { outcome, payload: undefined };
+    }
+    const payload = context.findItem(responseKey);
+    return payload === undefined
+      ? { outcome: Result.fail(noResponse(request.id)), payload: undefined }
+      : { outcome, payload };
   }
 
   /**
@@ -89,7 +96,7 @@ export class OperationInvoker {
    *
    * @remarks
    * 要用登记时的同一份契约：契约不是登记的那一份返回 `KERNEL_VALIDATION_002`，未登记返回 `KERNEL_NOTFOUND_001`。
-   * 中间件以成功短路、处理器没有执行时，没有响应可交，返回 `PRIMITIVES_VALIDATION_002`
+   * 中间件以成功短路、处理器没有执行时，没有响应可交，返回 `KERNEL_UNEXPECTED_001` + `kernel.operation.no_response`（RFC-0011 规则 9）
    */
   async invokeTyped<Req, Res>(
     context: InvocationContext,
@@ -101,8 +108,13 @@ export class OperationInvoker {
       return Result.fail(notFound(contract.id));
     }
     if (descriptor.contract !== contract) {
+      // TypeScript 的类型参数在运行期不存在，没有类型名可写：expected / actual 只给人看，写明是哪一份契约
       return Result.fail(
-        ErrorInfo.validation(OperationErrorCode.TypeMismatch, OperationMessageKey.TypeMismatch, { id: contract.id }),
+        ErrorInfo.validation(OperationErrorCode.TypeMismatch, OperationMessageKey.TypeMismatch, {
+          id: contract.id,
+          expected: 'the registered contract',
+          actual: 'another contract object',
+        }),
       );
     }
     const { handler } = internalsOf(descriptor);
@@ -115,10 +127,13 @@ export class OperationInvoker {
     if (!outcome.ok) {
       return Result.fail(outcome.error);
     }
-    return (
-      result ?? Result.fail(ErrorInfo.literal(ErrorCode.UninitializedResult, 'The result has not been initialized.'))
-    );
+    return result ?? Result.fail(noResponse(contract.id));
   }
+}
+
+/** 管道以成功结束而没有响应 */
+function noResponse(id: string): ErrorInfo {
+  return ErrorInfo.unexpected(OperationErrorCode.Unexpected, OperationMessageKey.NoResponse, { id });
 }
 
 /**
@@ -139,11 +154,19 @@ function enter(
   context.deleteItem(responseKey);
 }
 
-/** 管道的终点：执行这次调用的终点；不是经调用器进入的管道没有要执行的操作 */
+/**
+ * 管道的终点：执行这次调用的终点
+ *
+ * @remarks
+ * 管道只经调用器进入，终点总在对象袋里；找不到说明有中间件把不是这次调用派生的上下文交给了下游，是中间件的缺陷
+ */
 async function dispatch(context: InvocationContext): Promise<Result<void>> {
   const terminal = context.findItem(terminalKey);
   if (terminal === undefined) {
-    return Result.fail(ErrorInfo.notFound(OperationErrorCode.NotFound, OperationMessageKey.NotFound));
+    throw new FrameworkError(
+      ErrorCode.InvalidArgument,
+      'A middleware passed a context that was not derived from this invocation to the next step.',
+    );
   }
   return terminal(context);
 }

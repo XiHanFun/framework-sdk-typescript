@@ -30,5 +30,6 @@ export {
   type OperationRequest,
   type OperationResponse,
   type OperationSchema,
+  RequestDecodeError,
   type RequestDecoder,
 } from './registry.ts';

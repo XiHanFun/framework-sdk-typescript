@@ -50,10 +50,35 @@ export type OperationHandler<Req, Res> = (context: InvocationContext, request: R
  * 把已解析的 JSON 载荷转成请求类型
  *
  * @remarks
- * 载荷与请求类型不符时抛出，消息就是 `KERNEL_VALIDATION_001` 细节里的 `reason`：只写路径与原因（如 `$.quantity must be a number`），
- * 不带目标类型名（RFC-0011 规则 2）。可以直接用 Schema 库的解析函数
+ * 载荷与请求类型不符时抛出。`KERNEL_VALIDATION_001` 细节里的 `reason` 只写出错位置的 JSON 路径（RFC-0011 规则 2）：
+ * 抛出 {@link RequestDecodeError}（或任何带 `$` 开头的字符串 `path` 成员的错误）时取它的路径，其他异常写 `$`。
+ * 可以直接用 Schema 库的解析函数
  */
 export type RequestDecoder<Req> = (value: JsonValue) => Req;
+
+/**
+ * 解码器报告载荷与请求类型不符的位置
+ *
+ * @example
+ * ```ts
+ * if (typeof value.quantity !== 'number') throw new RequestDecodeError('$.quantity');
+ * ```
+ */
+export class RequestDecodeError extends Error {
+  /** 错误名 */
+  override readonly name = 'RequestDecodeError';
+  /** 出错位置的 JSON 路径，以 `$` 开头，如 `$.lines[0].quantity` */
+  readonly path: string;
+
+  /**
+   * @param path - 出错位置的 JSON 路径
+   * @param message - 给开发者看的说明，不上线；缺省为路径
+   */
+  constructor(path: string, message?: string) {
+    super(message ?? path);
+    this.path = path;
+  }
+}
 
 /**
  * 一次登记
@@ -169,15 +194,19 @@ export class OperationRegistry {
       checkSchema(contract.id, 'request', registration.schema.request);
       checkSchema(contract.id, 'response', registration.schema.response);
     }
-    if (this.#descriptors.has(contract.id)) {
-      throw new FrameworkError(OperationErrorCode.Duplicate, `The operation '${contract.id}' is already registered.`);
+    // 配置期的两个错误以 FrameworkError 抛出，码、键与参数与宿主一致（RFC-0011「错误码」）
+    const existing = this.#descriptors.get(contract.id);
+    if (existing !== undefined) {
+      throw FrameworkError.fromMessage(OperationErrorCode.Duplicate, OperationMessageKey.Duplicate, {
+        id: contract.id,
+        owner: existing.owner,
+      });
     }
     // 容量是硬上限：登记表不随插件或配置无界增长
     if (this.#descriptors.size >= OperationRegistry.capacity) {
-      throw new FrameworkError(
-        OperationErrorCode.RegistryFull,
-        `The operation registry is full (${OperationRegistry.capacity} operations).`,
-      );
+      throw FrameworkError.fromMessage(OperationErrorCode.RegistryFull, OperationMessageKey.RegistryFull, {
+        capacity: OperationRegistry.capacity,
+      });
     }
     const descriptor = new OperationDescriptor(registration as unknown as OperationRegistration<unknown, unknown>);
     this.#descriptors.set(contract.id, descriptor);
@@ -220,7 +249,16 @@ export function notFound(id: string): ErrorInfo {
 /** 严格的 UTF-8：坏字节即失败；保留 BOM，让带 BOM 的载荷与 Go 一样按非 JSON 拒绝 */
 const utf8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 
-/** 解码载荷：空等价于 `{}`；非 UTF-8、非 JSON、`null` 或解码器拒绝都是 `KERNEL_VALIDATION_001` */
+/** 载荷整体不合法时的路径：JSON 的根 */
+const rootPath = '$';
+
+/**
+ * 解码载荷：空等价于 `{}`；非 UTF-8、非 JSON、`null` 或解码器拒绝都是 `KERNEL_VALIDATION_001`
+ *
+ * @remarks
+ * `reason` 只写出错位置的 JSON 路径（RFC-0011 规则 2，与 .NET 一致）：不带解析器的报错原文，它会引用载荷片段或类型名；
+ * 字面量 `null` 写 `the payload is null`，与 .NET 相同
+ */
 function decodePayload(
   id: string,
   payload: string | Uint8Array | undefined,
@@ -230,7 +268,7 @@ function decodePayload(
   try {
     text = payload === undefined ? '' : typeof payload === 'string' ? payload : utf8.decode(payload);
   } catch {
-    return invalidPayload(id, 'the payload is not valid UTF-8');
+    return invalidPayload(id, rootPath);
   }
   if (text.trim() === '') {
     text = '{}';
@@ -239,8 +277,7 @@ function decodePayload(
   try {
     value = JSON.parse(text) as JsonValue;
   } catch {
-    // 不带解析器的报错原文：它会引用载荷片段，原因只写结论
-    return invalidPayload(id, 'the payload is not valid JSON');
+    return invalidPayload(id, rootPath);
   }
   if (value === null) {
     return invalidPayload(id, 'the payload is null');
@@ -249,13 +286,19 @@ function decodePayload(
   try {
     request = decode(value);
   } catch (error) {
-    return invalidPayload(id, error instanceof Error ? error.message : String(error));
+    return invalidPayload(id, pathOf(error));
   }
   // 请求与成功值一样不能为空：解码器返回空值说明载荷没有给出请求
   if (request === null || request === undefined) {
-    return invalidPayload(id, 'the decoder produced no request');
+    return invalidPayload(id, rootPath);
   }
   return Result.ok(request);
+}
+
+/** 解码器报告的路径：带 `$` 开头的字符串 `path` 成员时取它，否则是根 */
+function pathOf(error: unknown): string {
+  const path = typeof error === 'object' && error !== null ? (error as { path?: unknown }).path : undefined;
+  return typeof path === 'string' && path.startsWith(rootPath) ? path : rootPath;
 }
 
 function invalidPayload(id: string, reason: string): Result<never> {

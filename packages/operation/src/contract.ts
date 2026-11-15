@@ -10,6 +10,8 @@ export const OperationErrorCode = Object.freeze({
   InvalidPayload: 'KERNEL_VALIDATION_001',
   /** 类型化调用的请求或响应类型与登记不符 */
   TypeMismatch: 'KERNEL_VALIDATION_002',
+  /** 调用期间的意外：管道以成功结束而没有响应，或未处理的异常 */
+  Unexpected: 'KERNEL_UNEXPECTED_001',
   /** 操作 ID 重复登记（配置期） */
   Duplicate: 'KERNEL_OPERATION_001',
   /** 操作登记表已满（配置期） */
@@ -17,15 +19,21 @@ export const OperationErrorCode = Object.freeze({
 } as const);
 
 /**
- * 操作错误的消息键，与 .NET 内核的语言文件一致
+ * 操作错误的消息键：SDK 与宿主共用（RFC-0011「错误码」，spec/conformance/vectors/primitives/kernel-messages.json）
  */
 export const OperationMessageKey = Object.freeze({
   /** 未登记，参数 `id` */
   NotFound: 'kernel.operation.unknown',
-  /** 载荷不合法，参数 `id`、`reason` */
+  /** 载荷不合法，参数 `id`、`reason`（只写出错位置的 JSON 路径） */
   InvalidPayload: 'kernel.operation.invalid_payload',
-  /** 类型不符，参数 `id` */
+  /** 类型不符，参数 `id`、`expected`、`actual` */
   TypeMismatch: 'kernel.operation.type_mismatch',
+  /** 管道以成功结束而没有响应，参数 `id` */
+  NoResponse: 'kernel.operation.no_response',
+  /** 操作 ID 重复登记，参数 `id`、`owner` */
+  Duplicate: 'kernel.operation.duplicate',
+  /** 登记表已满，参数 `capacity` */
+  RegistryFull: 'kernel.operation.registry_full',
 } as const);
 
 /**
