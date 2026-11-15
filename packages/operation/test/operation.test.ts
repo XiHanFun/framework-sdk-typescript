@@ -1,0 +1,313 @@
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+
+import { InvocationContext } from '@xihan-framework/invocation';
+import {
+  defineContract,
+  Expose,
+  findOperation,
+  findOperationRequest,
+  findOperationResponsePayload,
+  isOperationId,
+  type OperationContract,
+  OperationErrorCode,
+  OperationInvoker,
+  OperationMessageKey,
+  OperationRegistry,
+} from '@xihan-framework/operation';
+import { middleware, PipelineBuilder, PipelineErrorCode, Placement } from '@xihan-framework/pipeline';
+import {
+  BaggageKey,
+  ErrorCode,
+  ErrorInfo,
+  FrameworkError,
+  isPlainObject,
+  type JsonValue,
+  PipelineStage,
+  Result,
+  Stability,
+} from '@xihan-framework/primitives';
+
+interface CreateOrder {
+  readonly quantity: number;
+}
+
+interface OrderCreated {
+  readonly id: string;
+  readonly quantity: number;
+}
+
+/** 手写解码器：与 Go 的 json.Unmarshal 一样，缺省字段取零值，类型不符时报路径 */
+function decodeCreateOrder(value: JsonValue): CreateOrder {
+  if (!isPlainObject(value)) {
+    throw new TypeError('$ must be an object');
+  }
+  const quantity = value.quantity ?? 0;
+  if (typeof quantity !== 'number') {
+    throw new TypeError('$.quantity must be a number');
+  }
+  return { quantity };
+}
+
+const createOrder = defineContract<CreateOrder, OrderCreated>({
+  id: 'orders.create',
+  stability: Stability.Stable,
+  expose: [Expose.Http],
+});
+
+function newInvoker(builder?: PipelineBuilder): OperationInvoker {
+  const registry = new OperationRegistry();
+  registry.add({
+    contract: createOrder,
+    decode: decodeCreateOrder,
+    handler: async (context, request) => {
+      if (request.quantity <= 0) {
+        return Result.fail(
+          ErrorInfo.validation('ORDERS_VALIDATION_001', 'orders.quantity.invalid', { quantity: request.quantity }),
+        );
+      }
+      return Result.ok({ id: `o-${context.correlation ?? ''}`, quantity: request.quantity });
+    },
+    schema: { request: '{}', response: '{}' },
+  });
+  return new OperationInvoker(registry, builder);
+}
+
+function codeOf(outcome: Result<unknown>): string | undefined {
+  return outcome.ok ? undefined : outcome.error.code;
+}
+
+function throwsCode(action: () => unknown, code: string): void {
+  assert.throws(action, (error: unknown) => error instanceof FrameworkError && error.code === code);
+}
+
+test('调用经过完整管道并编码响应', async () => {
+  let seen: string | undefined;
+  const builder = new PipelineBuilder().useAt(
+    middleware('Observe', (context, next) => {
+      seen = findOperation(context)?.contract.id;
+      assert.equal(findOperationRequest(context)?.id, 'orders.create');
+      return next(context);
+    }),
+    PipelineStage.Observe,
+    Placement.End,
+  );
+  const invoker = newInvoker(builder);
+  const context = InvocationContext.create({ baggage: { [BaggageKey.Correlation]: 'c1' } });
+
+  const response = await invoker.invoke(context, { id: 'orders.create', payload: '{"quantity":2}' });
+  assert.ok(response.outcome.ok);
+  assert.equal(response.payload, '{"id":"o-c1","quantity":2}');
+  assert.equal(seen, 'orders.create');
+  assert.equal(findOperationResponsePayload(context), '{"id":"o-c1","quantity":2}');
+
+  const failed = await invoker.invoke(InvocationContext.create(), { id: 'orders.create', payload: '{"quantity":0}' });
+  assert.equal(codeOf(failed.outcome), 'ORDERS_VALIDATION_001');
+  assert.equal(failed.payload, undefined);
+
+  const missing = await invoker.invoke(InvocationContext.create(), { id: 'orders.missing' });
+  assert.equal(codeOf(missing.outcome), OperationErrorCode.NotFound);
+  assert.deepEqual(missing.outcome.ok ? undefined : missing.outcome.error.details, { id: 'orders.missing' });
+
+  for (const payload of ['null', '[1]', '{', '{"quantity":"2"}']) {
+    const invalid = await invoker.invoke(InvocationContext.create(), { id: 'orders.create', payload });
+    assert.equal(codeOf(invalid.outcome), OperationErrorCode.InvalidPayload, `payload ${payload}`);
+  }
+  const empty = await invoker.invoke(InvocationContext.create(), { id: 'orders.create' });
+  assert.equal(codeOf(empty.outcome), 'ORDERS_VALIDATION_001', 'an empty payload is {}');
+  const blank = await invoker.invoke(InvocationContext.create(), { id: 'orders.create', payload: ' \n ' });
+  assert.equal(codeOf(blank.outcome), 'ORDERS_VALIDATION_001', 'a blank payload is {}');
+});
+
+test('载荷不合法的细节：消息键、id 与只写结论的 reason', async () => {
+  const invoker = newInvoker();
+  const cases: [string | Uint8Array, string][] = [
+    ['null', 'the payload is null'],
+    ['{"secret":', 'the payload is not valid JSON'],
+    ['{"quantity":"2"}', '$.quantity must be a number'],
+    [new Uint8Array([0x7b, 0xff, 0x7d]), 'the payload is not valid UTF-8'],
+    [new Uint8Array([0xef, 0xbb, 0xbf, 0x7b, 0x7d]), 'the payload is not valid JSON'],
+  ];
+  for (const [payload, reason] of cases) {
+    const response = await invoker.invoke(InvocationContext.create(), { id: 'orders.create', payload });
+    assert.ok(!response.outcome.ok);
+    const { error } = response.outcome;
+    assert.equal(error.code, OperationErrorCode.InvalidPayload);
+    assert.equal(error.messageKey, OperationMessageKey.InvalidPayload);
+    assert.deepEqual(error.details, { id: 'orders.create', reason });
+  }
+  const bytes = await invoker.invoke(InvocationContext.create(), {
+    id: 'orders.create',
+    payload: new TextEncoder().encode('{"quantity":4}'),
+  });
+  assert.equal(bytes.payload, '{"id":"o-","quantity":4}');
+});
+
+test('类型化调用核对契约', async () => {
+  const invoker = newInvoker();
+  const context = InvocationContext.create({ baggage: { [BaggageKey.Correlation]: 'c2' } });
+  const created = await invoker.invokeTyped(context, createOrder, { quantity: 3 });
+  assert.ok(created.ok);
+  assert.deepEqual(created.value, { id: 'o-c2', quantity: 3 });
+
+  const impostor = defineContract<CreateOrder, string>({ id: 'orders.create', expose: [Expose.Http] });
+  const mismatch = await invoker.invokeTyped(InvocationContext.create(), impostor, { quantity: 3 });
+  assert.equal(codeOf(mismatch), OperationErrorCode.TypeMismatch);
+
+  const unknown = defineContract<CreateOrder, string>({ id: 'orders.unknown', expose: [] });
+  assert.equal(
+    codeOf(await invoker.invokeTyped(InvocationContext.create(), unknown, { quantity: 1 })),
+    OperationErrorCode.NotFound,
+  );
+
+  const rejected = await invoker.invokeTyped(InvocationContext.create(), createOrder, { quantity: 0 });
+  assert.equal(codeOf(rejected), 'ORDERS_VALIDATION_001');
+});
+
+test('同一个上下文上先后的调用互不串用终点与载荷', async () => {
+  const invoker = newInvoker();
+  const context = InvocationContext.create();
+  assert.ok((await invoker.invokeTyped(context, createOrder, { quantity: 5 })).ok);
+  const response = await invoker.invoke(context, { id: 'orders.create', payload: '{"quantity":6}' });
+  assert.equal(response.payload, '{"id":"o-","quantity":6}');
+  const failed = await invoker.invoke(context, { id: 'orders.create', payload: '{"quantity":0}' });
+  assert.equal(failed.payload, undefined);
+  assert.equal(findOperationResponsePayload(context), undefined);
+});
+
+test('中间件的短路与派生上下文', async () => {
+  const denied = ErrorInfo.denied('ORDERS_DENIED_001', 'orders.denied');
+  const deny = new PipelineBuilder().useAt(
+    middleware('Deny', async () => Result.fail(denied)),
+    PipelineStage.Authorize,
+  );
+  const denying = newInvoker(deny);
+  assert.equal(
+    codeOf((await denying.invoke(InvocationContext.create(), { id: 'orders.create' })).outcome),
+    'ORDERS_DENIED_001',
+  );
+  assert.equal(
+    codeOf(await denying.invokeTyped(InvocationContext.create(), createOrder, { quantity: 1 })),
+    'ORDERS_DENIED_001',
+  );
+
+  // 以成功短路：XGI 没有载荷，类型化调用没有响应可交
+  const skip = new PipelineBuilder().useAt(
+    middleware('Replay', async () => Result.success()),
+    PipelineStage.Idempotency,
+  );
+  const skipping = newInvoker(skip);
+  const skipped = await skipping.invoke(InvocationContext.create(), { id: 'orders.create', payload: '{"quantity":1}' });
+  assert.ok(skipped.outcome.ok);
+  assert.equal(skipped.payload, undefined);
+  assert.equal(
+    codeOf(await skipping.invokeTyped(InvocationContext.create(), createOrder, { quantity: 1 })),
+    ErrorCode.UninitializedResult,
+  );
+
+  // 处理器拿到中间件派生的上下文
+  const tenant = new PipelineBuilder().useAt(
+    middleware('Correlate', (context, next) => next(context.withBaggage(BaggageKey.Correlation, 'derived'))),
+    PipelineStage.Tenant,
+  );
+  const derived = await newInvoker(tenant).invoke(InvocationContext.create(), {
+    id: 'orders.create',
+    payload: '{"quantity":1}',
+  });
+  assert.equal(derived.payload, '{"id":"o-derived","quantity":1}');
+
+  const cyclic = new PipelineBuilder()
+    .useAt(
+      middleware('A', (context, next) => next(context)),
+      PipelineStage.Validate,
+    )
+    .useAt(
+      middleware('B', (context, next) => next(context)),
+      PipelineStage.Validate,
+    )
+    .before('A', 'B')
+    .after('A', 'B');
+  throwsCode(() => newInvoker(cyclic), PipelineErrorCode.Cycle);
+});
+
+test('响应无法编码为 JSON 时是 KERNEL_UNEXPECTED_001', async () => {
+  const registry = new OperationRegistry();
+  const contract = defineContract<Record<string, never>, { big: bigint }>({ id: 'numbers.get', expose: [] });
+  registry.add({ contract, decode: () => ({}), handler: async () => Result.ok({ big: 1n }) });
+  const descriptor = registry.find('numbers.get');
+  assert.ok(descriptor);
+  const response = await descriptor.execute(InvocationContext.create());
+  assert.ok(!response.outcome.ok);
+  assert.equal(response.outcome.error.code, 'KERNEL_UNEXPECTED_001');
+  assert.match(response.outcome.error.message, /^The response of 'numbers\.get' could not be encoded: /);
+});
+
+test('登记表拒绝重复、不合法的 ID 与契约', () => {
+  const registry = new OperationRegistry();
+  const handler = async () => Result.ok({});
+  const decode = () => ({});
+  throwsCode(
+    () => registry.add({ contract: { id: 'Orders.Create', stability: 'stable', expose: [] }, handler, decode }),
+    ErrorCode.InvalidArgument,
+  );
+  throwsCode(
+    () => defineContract({ id: 'orders.create', expose: [], permission: 'p', policy: 'q' }),
+    ErrorCode.InvalidArgument,
+  );
+  assert.throws(() => defineContract({ id: 'orders.create', expose: [], permission: 'p', policy: 'q' }), {
+    message: "The operation 'orders.create' must declare either a permission or a policy.",
+  });
+  throwsCode(() => defineContract({ id: 'orders.create', expose: ['soap' as Expose] }), ErrorCode.InvalidArgument);
+  throwsCode(
+    () => defineContract({ id: 'orders.create', expose: [Expose.Http, Expose.Http] }),
+    ErrorCode.InvalidArgument,
+  );
+  throwsCode(() => defineContract({ id: 'orders.create', expose: [], permission: '' }), ErrorCode.InvalidArgument);
+  const contract = defineContract({ id: 'orders.create', expose: [] });
+  assert.equal(contract.stability, Stability.Stable, 'stability defaults to stable');
+  assert.ok(Object.isFrozen(contract) && Object.isFrozen(contract.expose));
+  throwsCode(
+    () => registry.add({ contract, handler, decode, schema: { request: '[]', response: '{}' } }),
+    ErrorCode.InvalidArgument,
+  );
+  throwsCode(() => registry.add({ contract, handler, decode, owner: '' }), ErrorCode.InvalidArgument);
+  throwsCode(() => registry.add({ contract, handler: undefined as never, decode }), ErrorCode.InvalidArgument);
+  assert.equal(registry.size, 0, 'rejected registrations are not kept');
+
+  registry.add({ contract, handler, decode });
+  assert.throws(
+    () => registry.add({ contract, handler, decode }),
+    (error: unknown) =>
+      error instanceof FrameworkError &&
+      error.code === OperationErrorCode.Duplicate &&
+      error.message === "The operation 'orders.create' is already registered.",
+  );
+  const list = registry.list();
+  assert.equal(list.length, 1);
+  assert.equal(list[0]?.owner, 'app');
+  assert.ok(isOperationId('order-lines.list'));
+  assert.ok(!isOperationId('orders'));
+  assert.ok(!isOperationId('orders.list-'));
+});
+
+test('登记表容量 10000，按 ID 升序列出', () => {
+  assert.equal(OperationRegistry.capacity, 10_000);
+  const registry = new OperationRegistry();
+  const handler = async () => Result.ok({});
+  const decode = () => ({});
+  for (let index = OperationRegistry.capacity - 1; index >= 0; index -= 1) {
+    const contract: OperationContract = { id: `items${index}.list`, stability: Stability.Stable, expose: [] };
+    registry.add({ contract, handler, decode, owner: 'xihan.samples.bulk' });
+  }
+  assert.equal(registry.size, OperationRegistry.capacity);
+  assert.throws(
+    () => registry.add({ contract: { id: 'overflow.list', stability: 'stable', expose: [] }, handler, decode }),
+    (error: unknown) =>
+      error instanceof FrameworkError &&
+      error.code === OperationErrorCode.RegistryFull &&
+      error.message === 'The operation registry is full (10000 operations).',
+  );
+  const ids = registry.list().map((descriptor) => descriptor.contract.id);
+  assert.deepEqual(ids.slice(0, 3), ['items0.list', 'items1.list', 'items10.list']);
+  assert.equal(registry.list()[0]?.owner, 'xihan.samples.bulk');
+});

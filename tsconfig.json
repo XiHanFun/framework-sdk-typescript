@@ -4,6 +4,7 @@
     { "path": "packages/primitives" },
     { "path": "packages/manifest" },
     { "path": "packages/invocation" },
-    { "path": "packages/pipeline" }
+    { "path": "packages/pipeline" },
+    { "path": "packages/operation" }
   ]
 }
