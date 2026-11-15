@@ -1,0 +1,24 @@
+{
+  "name": "framework-sdk-typescript",
+  "version": "0.1.0",
+  "private": true,
+  "description": "XiHan Framework SDK for TypeScript 的 pnpm 工作区",
+  "license": "MIT",
+  "type": "module",
+  "packageManager": "pnpm@11.22.0",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b && tsc -p tsconfig.test.json",
+    "test": "node --conditions=xihan-source --test \"packages/*/test/*.test.ts\"",
+    "check": "biome check .",
+    "format": "biome check --write ."
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.6.4",
+    "@types/node": "24.10.15",
+    "typescript": "5.8.3"
+  }
+}
