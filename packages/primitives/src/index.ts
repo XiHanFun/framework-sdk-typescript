@@ -40,6 +40,7 @@ export {
   type MessageArguments,
   MessageCatalog,
   type MessageResolver,
+  maxMessageKeyLength,
   messageKeyDomain,
   placeholders,
   positional,

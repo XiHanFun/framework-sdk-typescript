@@ -9,6 +9,9 @@ export type MessageArguments = Readonly<Record<string, unknown>>;
 /** 消息键文法（RFC-0001、RFC-0010，2026-10-28 起首段也允许下划线） */
 const messageKeyPattern = /^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$/;
 
+/** 消息键的最大长度（RFC-0010「消息键」，与 .NET 的 `MessageTemplate.MaxKeyLength` 相同） */
+export const maxMessageKeyLength = 128;
+
 /** 占位符名文法：按名字或按位置 */
 const placeholderNamePattern = /^([A-Za-z][A-Za-z0-9_]*|[0-9]+)$/;
 
@@ -22,10 +25,10 @@ const localeNameMaxLength = 35;
 const fallbackLocale = 'en-US';
 
 /**
- * 判断消息键是否符合 `<domain>.<segment>[.<segment>…]`，各段 `[a-z][a-z0-9_]*`
+ * 判断消息键是否符合 `<domain>.<segment>[.<segment>…]`，各段 `[a-z][a-z0-9_]*`，最长 128 个字符
  */
 export function isMessageKey(key: string): boolean {
-  return messageKeyPattern.test(key);
+  return key.length <= maxMessageKeyLength && messageKeyPattern.test(key);
 }
 
 /**
@@ -113,9 +116,9 @@ export function placeholders(template: string): string[] {
  * 用参数填充模板；缺参数的占位符原样保留
  *
  * @remarks
- * `{name}` 取命名参数，`{0}` 取位置参数（见 {@link positional}），`{{`、`}}` 是转义的花括号。
- * 占位符可带 `:format`：数值支持 .NET 标准数值格式的 `D`、`F`、`N`、`X` 四种（不变区域，如 `{count:D3}` 得 `007`），
- * 其他写法与其他类型的值按 {@link describe} 的规则转成文本
+ * 规则见 RFC-0010「模板」：`{name}` 取命名参数，`{0}` 取位置参数（见 {@link positional}），`{{`、`}}` 是转义的花括号；
+ * 值为 `null` 写空串，不算缺值，`undefined` 算缺值。占位符可带 `:format`：可移植的 `D`、`X` / `x`、`F`、`N`
+ * 按不变文化解释（如 `{count:D3}` 得 `007`，`F` 与 `N` 正好一半时取偶），其他说明符按无格式输出
  */
 export function formatMessage(template: string, args?: MessageArguments): string {
   return render(template, args, false) as string;
@@ -151,11 +154,11 @@ function render(template: string, args: MessageArguments | undefined, strict: bo
   return text;
 }
 
-/** .NET 标准数值格式里与区域无关的四种：D 整数补零、F 定点、N 千分位、X 十六进制 */
+/** 可移植的格式说明符（RFC-0010「模板」）：D 整数补零、X / x 十六进制、F 定点、N 千分位 */
 const numberFormatPattern = /^([DdFfNnXx])([0-9]{0,2})$/;
 
 /**
- * 按 .NET 标准数值格式（不变区域）格式化数值；不支持的格式或值返回 `undefined`
+ * 按可移植的格式说明符（不变文化）格式化数值；不支持的格式或值返回 `undefined`，调用方按无格式输出
  */
 function formatNumber(value: unknown, format: string): string | undefined {
   const match = numberFormatPattern.exec(format);
@@ -185,28 +188,80 @@ function formatNumber(value: unknown, format: string): string | undefined {
       return match[1] === 'X' ? digits.toUpperCase() : digits;
     }
     case 'F':
-    case 'N': {
-      if (typeof value !== 'number' || !Number.isFinite(value)) {
+    case 'N':
+      if (typeof value === 'number' && !Number.isFinite(value)) {
         return undefined;
       }
-      const digits = precision ?? 2;
-      return new Intl.NumberFormat('en-US', {
-        minimumFractionDigits: digits,
-        maximumFractionDigits: digits,
-        useGrouping: specifier === 'N',
-      }).format(value);
-    }
+      return formatFixed(value, precision ?? 2, specifier === 'N');
     default:
       return undefined;
   }
 }
 
 /**
- * 把参数值转成文本：字符串原样，数值、布尔与 bigint 按 `String`，`null` 为 `null`，数组与对象按 JSON
+ * 定点格式：按值的精确十进制展开舍入到 `digits` 位小数，正好一半时取偶（RFC-0010「模板」）
+ *
+ * @remarks
+ * 不能用 `toFixed`（一半时进位），也不能用 Intl 的 halfEven：ICU 按最短往返的十进制串舍入，
+ * 2.675 的二进制值略小于 2.675，按精确值应得 2.67，ICU 却当成正好一半得 2.68
+ */
+function formatFixed(value: number | bigint, digits: number, grouping: boolean): string {
+  const negative = value < 0;
+  const { numerator, scale } = exactDecimal(value);
+  // 值 = numerator / 10^scale；乘以 10^digits 后按一半取偶舍入成整数
+  let units: bigint;
+  if (scale <= digits) {
+    units = numerator * 10n ** BigInt(digits - scale);
+  } else {
+    const divisor = 10n ** BigInt(scale - digits);
+    const quotient = numerator / divisor;
+    const twiceRemainder = (numerator % divisor) * 2n;
+    const roundUp = twiceRemainder > divisor || (twiceRemainder === divisor && quotient % 2n === 1n);
+    units = roundUp ? quotient + 1n : quotient;
+  }
+  const text = units.toString().padStart(digits + 1, '0');
+  const integer = text.slice(0, text.length - digits);
+  const fraction = text.slice(text.length - digits);
+  const grouped = grouping ? integer.replace(/\B(?=(\d{3})+$)/g, ',') : integer;
+  return `${negative ? '-' : ''}${grouped}${digits > 0 ? `.${fraction}` : ''}`;
+}
+
+/**
+ * 把数值的绝对值写成 numerator / 10^scale 的精确形式
+ *
+ * @remarks
+ * 有限的 double 都是 m × 2^e：e < 0 时 m / 2^-e = m × 5^-e / 10^-e，所以十进制展开是有限且精确的
+ */
+function exactDecimal(value: number | bigint): { numerator: bigint; scale: number } {
+  if (typeof value === 'bigint') {
+    return { numerator: value < 0n ? -value : value, scale: 0 };
+  }
+  const view = new DataView(new ArrayBuffer(8));
+  view.setFloat64(0, Math.abs(value));
+  const bits = view.getBigUint64(0);
+  const biased = Number((bits >> 52n) & 0x7ffn);
+  const fraction = bits & ((1n << 52n) - 1n);
+  // 非规格化数没有隐含的最高位，指数固定为 -1074
+  const mantissa = biased === 0 ? fraction : fraction | (1n << 52n);
+  const exponent = biased === 0 ? -1074 : biased - 1075;
+  return exponent >= 0
+    ? { numerator: mantissa << BigInt(exponent), scale: 0 }
+    : { numerator: mantissa * 5n ** BigInt(-exponent), scale: -exponent };
+}
+
+/**
+ * 把参数值转成文本（RFC-0010「值的文本形式」）
+ *
+ * @remarks
+ * 字符串原样；数值按 `String`，在 1e-4 ≤ |x| < 1e15 内正是不用指数的最短往返形式，整数值不带小数点；
+ * 布尔写 `true` / `false`；`null` 写空串。规范不作规定的数组与对象按 JSON
  */
 function display(value: unknown): string {
   if (typeof value === 'string') {
     return value;
+  }
+  if (value === null) {
+    return '';
   }
   if (value !== null && typeof value === 'object') {
     try {
@@ -236,7 +291,7 @@ export function positional(...values: unknown[]): Record<string, unknown> {
  * 在没有文案时描述一个消息：`键 (k=v, ...)`，参数按名字升序；没有参数时只有键
  *
  * @remarks
- * 值为 `undefined` 的参数视为没有
+ * 值按 RFC-0010「值的文本形式」写；规范不规定参数的先后，这里按名字升序（与 Go 一致）；值为 `undefined` 的参数视为没有
  */
 export function describe(key: string, args?: MessageArguments): string {
   if (args === undefined) {

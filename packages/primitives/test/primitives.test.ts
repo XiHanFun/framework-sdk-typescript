@@ -274,12 +274,41 @@ test('消息键、区域名与模板文法', () => {
   );
   assert.equal(
     formatMessage('{when:yyyy-MM-dd} {flag} {list} {nil}', { when: 'today', flag: true, list: [1, 2], nil: null }),
-    'today true [1,2] null',
+    'today true [1,2] ',
   );
   assert.equal(tryFormatMessage('{a} {b}', { a: 1 }), undefined);
   assert.equal(tryFormatMessage('{a}', { a: 1 }), '1');
   assert.equal(describe('orders.failed'), 'orders.failed');
   assert.equal(describe('orders.failed', { b: 2, a: 'x', skipped: undefined }), 'orders.failed (a=x, b=2)');
+});
+
+test('消息键、模板格式化与 Describe 遵循向量', () => {
+  const vectors = vector<{
+    keys: { valid: string[]; invalid: string[] };
+    format: {
+      name: string;
+      template: string;
+      arguments: Record<string, unknown> | null;
+      lenient: string;
+      strict: string | null;
+    }[];
+    describe: { key: string; arguments: Record<string, unknown> | null; text: string }[];
+  }>('message-templates.json');
+  for (const key of vectors.keys.valid) {
+    assert.ok(isMessageKey(key), `${key} must be valid`);
+  }
+  for (const key of vectors.keys.invalid) {
+    assert.ok(!isMessageKey(key), `${key} must be invalid`);
+  }
+  // 向量的 null 参数表示没有参数；参数值按 JSON 的原类型交给格式化
+  for (const c of vectors.format) {
+    const args = c.arguments ?? undefined;
+    assert.equal(formatMessage(c.template, args), c.lenient, `${c.name} (lenient)`);
+    assert.equal(tryFormatMessage(c.template, args), c.strict ?? undefined, `${c.name} (strict)`);
+  }
+  for (const c of vectors.describe) {
+    assert.equal(describe(c.key, c.arguments ?? undefined), c.text, c.key);
+  }
 });
 
 test('错误的线上编码', () => {
