@@ -30,6 +30,15 @@ importers:
         specifier: workspace:*
         version: link:../primitives
 
+  packages/pipeline:
+    dependencies:
+      '@xihan-framework/invocation':
+        specifier: workspace:*
+        version: link:../invocation
+      '@xihan-framework/primitives':
+        specifier: workspace:*
+        version: link:../primitives
+
   packages/primitives: {}
 
 packages:
