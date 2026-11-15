@@ -169,7 +169,8 @@ const activationPattern = /^(onStartup|onOperation:[a-z0-9.*-]+|onEvent:[a-z0-9.
 const permissionPattern = /^(net\.outbound|fs\.read|fs\.write|capability):.+$/;
 const bindingNamePattern = /^[a-z][a-z0-9-]*$/;
 const bindingTypePattern = /^[a-z]+(:[a-z]+)?$/;
-const operationPattern = /^[a-z][a-z0-9-]*\.[a-z][a-z0-9-]*$/;
+/** 操作 ID 文法 `<resource>.<verb>`（RFC-0002 解析规则 2、conventions/operation-ids.md；Schema 自 ADR-0233 起与它相同） */
+const operationPattern = /^[a-z][a-z0-9]*(-[a-z0-9]+)*\.[a-z][a-z0-9]*(-[a-z0-9]+)*$/;
 const sectionPattern = /^XiHan:[A-Z][A-Za-z0-9]*(:[A-Z][A-Za-z0-9]*)*$/;
 const healthPattern = /^[a-z][a-z0-9.-]*$/;
 const permissionCodePattern = /^[a-z][a-z0-9-]*(\.[a-z][a-z0-9-]*)+$/;

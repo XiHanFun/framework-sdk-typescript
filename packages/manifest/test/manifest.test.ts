@@ -209,6 +209,27 @@ test('贡献的权限码遵循宿主的文法', () => {
   }
 });
 
+test('贡献的操作按操作 ID 文法校验', () => {
+  const template = (operation: string) =>
+    `{"id":"xihan.a.b","version":"1.0.0","primitives":"1","stability":"stable","kind":"capability","contributes":{"operations":[${JSON.stringify(operation)}]}}`;
+  for (const operation of ['orders.create', 'order-lines.list', 'tenant-members.list-online', 'v2items.get']) {
+    assert.deepEqual([...contributedOperations(readManifest(template(operation)))], [operation]);
+  }
+  // 以前的 Schema 放过了连字符结尾、连续连字符与段首连字符，ADR-0233 起与操作 ID 文法一致
+  for (const operation of [
+    'orders-.create',
+    'orders.create-',
+    'order--lines.list',
+    'orders.-list',
+    'orders',
+    'Orders.create',
+  ]) {
+    const error = rejection(template(operation));
+    assert.ok(error, `${operation} must be rejected`);
+    assert.equal(error.message, `The operation '${operation}' of 'xihan.a.b' must match <resource>.<verb>.`);
+  }
+});
+
 test('拒绝不合法的清单', () => {
   const cases: Record<string, string> = {
     'unknown field':
@@ -262,6 +283,7 @@ test('按 Schema 解码：类型、必填字段与接口版本的写法', () => 
     'unknown contribution field': `{${base},"primitives":"1","contributes":{"routes":[]}}`,
     'config without section': `{${base},"primitives":"1","contributes":{"config":{}}}`,
     'oversized version': `{${base},"primitives":"99999999999999999999"}`,
+    'member names are case-sensitive': `{${base},"Primitives":"1"}`,
   };
   for (const [name, data] of Object.entries(cases)) {
     const error = rejection(data);
