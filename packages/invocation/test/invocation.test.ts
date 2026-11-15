@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { setTimeout as sleep } from 'node:timers/promises';
 
@@ -163,6 +164,37 @@ test('W3C traceparent 的解析', () => {
   const explicit = InvocationContext.create({ trace: { traceId: newTraceId(), spanId: newSpanId(), sampled: false } });
   assert.equal(formatTraceParent(explicit), explicit.traceParent);
   assert.ok(explicit.traceParent.endsWith('-00'));
+});
+
+test('已登记键的值不合约束时在构造与派生上下文时丢弃，幂等键除外', () => {
+  const url = new URL('../../../spec/conformance/vectors/primitives/baggage-keys.json', import.meta.url);
+  const { values } = JSON.parse(readFileSync(url, 'utf8')) as {
+    values: { acceptable: string[]; unacceptable: string[] };
+  };
+  for (const value of values.acceptable) {
+    assert.equal(InvocationContext.create({ baggage: { [BaggageKey.Tenant]: value } }).tenant, value);
+    assert.equal(InvocationContext.create().withBaggage(BaggageKey.Correlation, value).correlation, value);
+  }
+  for (const value of values.unacceptable) {
+    const context = InvocationContext.create({
+      baggage: {
+        [BaggageKey.Tenant]: value,
+        [BaggageKey.Principal]: 'p1',
+        [BaggageKey.IdempotencyKey]: value,
+        'xihan.feature-flag': value,
+      },
+    });
+    assert.equal(context.tenant, undefined, `${JSON.stringify(value)} is dropped`);
+    assert.equal(context.principal, 'p1', 'the other members stay');
+    assert.equal(context.idempotencyKey, value, 'the idempotency key is never dropped');
+    assert.equal(context.findBaggage('xihan.feature-flag'), value, 'only registered keys are constrained');
+    // 派生时同样丢弃，原有的值也不留
+    const derived = InvocationContext.create({ baggage: { [BaggageKey.Correlation]: 'c1' } }).withBaggage(
+      BaggageKey.Correlation,
+      value,
+    );
+    assert.equal(derived.correlation, undefined);
+  }
 });
 
 test('不合法的 Baggage 键、追踪与互相冲突的选项是编程错误', () => {

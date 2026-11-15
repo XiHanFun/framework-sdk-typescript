@@ -8,7 +8,14 @@
  * @packageDocumentation
  */
 
-export { BaggageKey, isBaggageKeyRegistered, isBaggageKeyWellFormed, registeredBaggageKeys } from './baggage.ts';
+export {
+  BaggageKey,
+  isBaggageKeyRegistered,
+  isBaggageKeyWellFormed,
+  isBaggageValueAcceptable,
+  maxBaggageValueLength,
+  registeredBaggageKeys,
+} from './baggage.ts';
 export { builtInMessages, builtInTemplates, PrimitivesMessageKey } from './built-in-messages.ts';
 export {
   ErrorCode,

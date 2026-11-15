@@ -17,6 +17,7 @@ import {
   formatMessage,
   isBaggageKeyRegistered,
   isBaggageKeyWellFormed,
+  isBaggageValueAcceptable,
   isErrorCode,
   isLifecycleState,
   isLocaleName,
@@ -31,6 +32,7 @@ import {
   lifecycleStates,
   Maybe,
   MessageCatalog,
+  maxBaggageValueLength,
   messageKeyDomain,
   PipelineStage,
   PrimitivesMessageKey,
@@ -85,7 +87,12 @@ test('错误码遵循向量', () => {
 });
 
 test('Baggage 键遵循向量', () => {
-  const vectors = vector<{ wellFormed: string[]; illFormed: string[]; registered: string[] }>('baggage-keys.json');
+  const vectors = vector<{
+    wellFormed: string[];
+    illFormed: string[];
+    registered: string[];
+    values: { acceptable: string[]; unacceptable: string[] };
+  }>('baggage-keys.json');
   for (const key of vectors.wellFormed) {
     assert.ok(isBaggageKeyWellFormed(key), `${key} must be well-formed`);
   }
@@ -99,6 +106,14 @@ test('Baggage 键遵循向量', () => {
   assert.ok(!isBaggageKeyRegistered('xihan.feature-flag'));
   assert.equal(BaggageKey.IdempotencyKey, 'xihan.idempotency-key');
   assert.ok(Object.isFrozen(registeredBaggageKeys));
+  // 已登记键的值的约束（ADR-0204、ADR-0233）
+  for (const value of vectors.values.acceptable) {
+    assert.ok(isBaggageValueAcceptable(value), `${JSON.stringify(value)} must be acceptable`);
+  }
+  for (const value of vectors.values.unacceptable) {
+    assert.ok(!isBaggageValueAcceptable(value), `${JSON.stringify(value)} must be unacceptable`);
+  }
+  assert.equal(maxBaggageValueLength, 256);
 });
 
 test('生命周期迁移遵循向量', () => {

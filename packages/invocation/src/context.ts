@@ -5,6 +5,7 @@ import {
   FrameworkError,
   isBaggageKeyRegistered,
   isBaggageKeyWellFormed,
+  isBaggageValueAcceptable,
 } from '@xihan-framework/primitives';
 
 import { formatTraceParent, isSpanId, isTraceId, newSpanId, newTraceId, parseTraceParent } from './trace.ts';
@@ -81,7 +82,7 @@ export interface InvocationContextOptions {
   readonly traceParent?: string;
   /** 显式给出的追踪；不合法是编程错误；与 `traceParent` 二选一 */
   readonly trace?: { readonly traceId: string; readonly spanId: string; readonly sampled?: boolean };
-  /** Baggage；键必须符合 `xihan.<name>` */
+  /** Baggage；键必须符合 `xihan.<name>`，已登记键的值不合约束的成员丢弃（幂等键除外） */
   readonly baggage?: Readonly<Record<string, string>>;
 }
 
@@ -216,7 +217,8 @@ export class InvocationContext {
    * 派生一个多一个 Baggage 键值的上下文
    *
    * @remarks
-   * 进程内可以带格式合法的未登记键，它们不出进程（RFC-0003 第 3 条）
+   * 进程内可以带格式合法的未登记键，它们不出进程（RFC-0003 第 3 条）。已登记键的值不合约束时，派生的上下文里没有这个键
+   * （原有的值也不留），见 {@link isBaggageValueAcceptable}
    *
    * @throws {@link FrameworkError} 键不符合 `xihan.<name>` 时
    */
@@ -344,6 +346,14 @@ function resolveTrace(options: InvocationContextOptions): Pick<State, 'traceId' 
   return parsed ?? { traceId: newTraceId(), spanId: newSpanId(), sampled: true };
 }
 
+/**
+ * 复制并冻结 Baggage
+ *
+ * @remarks
+ * 键不合格式、值不是字符串是编程错误；已登记键的值不合约束（空、超过 256 个 UTF-16 码元、含控制字符）的成员丢弃，
+ * 与 W3C Baggage 忽略不合法的成员一致（conventions/baggage-keys.md）。幂等键例外：丢了它重复的调用会执行两次，
+ * 不合法的幂等键由幂等阶段以校验错误拒绝
+ */
 function copyBaggage(baggage: Readonly<Record<string, string>>): Readonly<Record<string, string>> {
   const copy: Record<string, string> = {};
   for (const [key, value] of Object.entries(baggage)) {
@@ -352,6 +362,9 @@ function copyBaggage(baggage: Readonly<Record<string, string>>): Readonly<Record
     }
     if (typeof value !== 'string') {
       throw invalid(`The baggage value of '${key}' must be a string.`);
+    }
+    if (isBaggageKeyRegistered(key) && key !== BaggageKey.IdempotencyKey && !isBaggageValueAcceptable(value)) {
+      continue;
     }
     copy[key] = value;
   }
