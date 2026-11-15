@@ -1,4 +1,4 @@
 {
   "files": [],
-  "references": [{ "path": "packages/primitives" }, { "path": "packages/manifest" }]
+  "references": [{ "path": "packages/primitives" }, { "path": "packages/manifest" }, { "path": "packages/invocation" }]
 }

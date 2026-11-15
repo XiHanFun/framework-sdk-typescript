@@ -1,0 +1,189 @@
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { setTimeout as sleep } from 'node:timers/promises';
+
+import {
+  cancellationOf,
+  formatTraceParent,
+  InvocationContext,
+  InvocationErrorCode,
+  InvocationMessageKey,
+  ItemKey,
+  isSpanId,
+  isTraceId,
+  newSpanId,
+  newTraceId,
+  parseTraceParent,
+} from '@xihan-framework/invocation';
+import { BaggageKey, ErrorCode, FrameworkError } from '@xihan-framework/primitives';
+
+/** 等待信号中止；用一个会保持进程存活的定时器兜底，避免测试在定时器触发前退出 */
+async function aborted(signal: AbortSignal, within = 2000): Promise<void> {
+  if (signal.aborted) {
+    return;
+  }
+  const keepAlive = setTimeout(() => {}, within);
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('the signal did not abort in time')), within);
+      signal.addEventListener(
+        'abort',
+        () => {
+          clearTimeout(timer);
+          resolve();
+        },
+        { once: true },
+      );
+    });
+  } finally {
+    clearTimeout(keepAlive);
+  }
+}
+
+function throwsInvalid(action: () => unknown): void {
+  assert.throws(
+    action,
+    (error: unknown) => error instanceof FrameworkError && error.code === ErrorCode.InvalidArgument,
+  );
+}
+
+test('新建时生成追踪、保留 Baggage', () => {
+  const context = InvocationContext.create({ baggage: { [BaggageKey.Tenant]: 't1' } });
+  assert.ok(isTraceId(context.traceId) && context.traceId.length === 32);
+  assert.ok(isSpanId(context.spanId) && context.spanId.length === 16);
+  assert.equal(context.tenant, 't1');
+  assert.equal(context.principal, undefined);
+  const derived = context.withBaggage(BaggageKey.Correlation, 'c1').withBaggage('xihan.feature-flag', 'on');
+  assert.equal(derived.correlation, 'c1');
+  assert.equal(context.correlation, undefined, 'derived baggage must not leak back');
+  assert.equal(derived.findBaggage('xihan.feature-flag'), 'on');
+  const stripped = derived.withoutUnregisteredBaggage();
+  assert.equal(stripped.findBaggage('xihan.feature-flag'), undefined, 'unregistered keys are stripped');
+  assert.equal(stripped.correlation, 'c1');
+  assert.ok(Object.isFrozen(derived.baggage));
+
+  const key = new ItemKey<number>('test.key');
+  derived.setItem(key, 1);
+  assert.equal(context.findItem(key), 1, 'items are shared between derived contexts');
+  assert.equal(new ItemKey<number>('test.key').toString(), 'ItemKey(test.key)');
+  assert.equal(context.findItem(new ItemKey<number>('test.key')), undefined, 'keys compare by identity');
+  assert.ok(context.deleteItem(key) && !context.deleteItem(key));
+
+  const parsed = parseTraceParent(context.traceParent);
+  assert.deepEqual(parsed, { traceId: context.traceId, spanId: context.spanId, sampled: true });
+  assert.equal(derived.traceId, context.traceId);
+  assert.equal(derived.signal, context.signal);
+  assert.equal(context.cancellation, undefined, 'no error without cancellation');
+  assert.ok(Object.isFrozen(context));
+});
+
+test('截止时间到点中止并翻译为 KERNEL_TIMEOUT_001', async () => {
+  const context = InvocationContext.create({ timeout: 20 });
+  assert.ok(context.hasDeadline);
+  const remaining = context.remainingTime(Date.now());
+  assert.ok(remaining !== undefined && remaining <= 20, `remaining ${remaining}`);
+  await aborted(context.signal);
+  const error = context.cancellation;
+  assert.equal(error?.code, InvocationErrorCode.DeadlineExceeded);
+  assert.equal(error?.messageKey, InvocationMessageKey.DeadlineExceeded);
+  assert.equal(error?.kind, 'TIMEOUT');
+  assert.equal((context.signal.reason as DOMException).name, 'TimeoutError', 'the raw abort reason is still available');
+  assert.ok(context.isExpired(Date.now()));
+  assert.equal(context.remainingTime(Date.now() + 1000), 0);
+  assert.equal(InvocationContext.create().remainingTime(Date.now()), undefined);
+  assert.ok(!InvocationContext.create().isExpired(Date.now()));
+});
+
+test('调用方取消翻译为 KERNEL_CANCELLED_001', async () => {
+  const controller = new AbortController();
+  const context = InvocationContext.create({ signal: controller.signal });
+  assert.equal(cancellationOf(context.signal), undefined);
+  controller.abort();
+  await aborted(context.signal);
+  assert.equal(context.cancellation?.code, InvocationErrorCode.Cancelled);
+  assert.equal(context.cancellation?.messageKey, InvocationMessageKey.Cancelled);
+
+  // 调用方先取消、截止时间还没到：报取消
+  const caller = new AbortController();
+  const withDeadline = InvocationContext.create({ signal: caller.signal, timeout: 1000 });
+  caller.abort();
+  assert.equal(withDeadline.cancellation?.code, InvocationErrorCode.Cancelled);
+});
+
+test('截止时间已触发即报超时，调用方同时取消也一样', async () => {
+  const caller = new AbortController();
+  const context = InvocationContext.create({ signal: caller.signal, timeout: 10 });
+  await aborted(context.signal);
+  caller.abort();
+  assert.equal(context.cancellation?.code, InvocationErrorCode.DeadlineExceeded);
+
+  // 调用方先取消，截止时间随后也到了：归因按截止信号，报超时（RFC-0004，ADR-0092）
+  const early = new AbortController();
+  const later = InvocationContext.create({ signal: early.signal, timeout: 15 });
+  early.abort();
+  assert.equal(later.cancellation?.code, InvocationErrorCode.Cancelled);
+  await sleep(60);
+  assert.equal(later.cancellation?.code, InvocationErrorCode.DeadlineExceeded);
+});
+
+test('截止时间的边界：已过期、超出定时器范围', async () => {
+  const past = InvocationContext.create({ deadline: Date.now() - 1 });
+  assert.ok(past.signal.aborted, 'a deadline in the past aborts at once');
+  assert.equal(past.cancellation?.code, InvocationErrorCode.DeadlineExceeded);
+
+  // 超出定时器范围的截止时间不起定时器，调用期间不会到期，但按时钟仍可判断过期
+  const far = Date.now() + 40 * 24 * 60 * 60 * 1000;
+  const distant = InvocationContext.create({ deadline: far });
+  await sleep(20);
+  assert.ok(!distant.signal.aborted);
+  assert.equal(distant.deadline, far);
+  assert.ok(distant.isExpired(far));
+  assert.equal(distant.cancellation, undefined);
+});
+
+test('W3C traceparent 的解析', () => {
+  assert.ok(parseTraceParent('00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01'));
+  for (const bad of [
+    '',
+    '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331',
+    '00-00000000000000000000000000000000-b7ad6b7169203331-01',
+    '00-0af7651916cd43dd8448eb211c80319c-0000000000000000-01',
+    '00-0AF7651916CD43DD8448EB211C80319C-b7ad6b7169203331-01',
+  ]) {
+    assert.equal(parseTraceParent(bad), undefined, `${bad} must not parse`);
+  }
+  const context = InvocationContext.create({
+    traceParent: '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-00',
+  });
+  assert.equal(context.traceId, '0af7651916cd43dd8448eb211c80319c');
+  assert.equal(context.sampled, false, 'an unsampled upstream stays unsampled');
+  assert.equal(context.traceParent, '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-00');
+  const ignored = InvocationContext.create({ traceParent: 'garbage' });
+  assert.ok(isTraceId(ignored.traceId), 'an invalid traceparent is ignored');
+  const explicit = InvocationContext.create({ trace: { traceId: newTraceId(), spanId: newSpanId(), sampled: false } });
+  assert.equal(formatTraceParent(explicit), explicit.traceParent);
+  assert.ok(explicit.traceParent.endsWith('-00'));
+});
+
+test('不合法的 Baggage 键、追踪与互相冲突的选项是编程错误', () => {
+  throwsInvalid(() => InvocationContext.create().withBaggage('tenant', 't1'));
+  throwsInvalid(() => InvocationContext.create({ baggage: { 'xihan.Tenant': 't1' } }));
+  throwsInvalid(() => InvocationContext.create({ baggage: { [BaggageKey.Tenant]: 1 as unknown as string } }));
+  throwsInvalid(() => InvocationContext.create({ trace: { traceId: 'abc', spanId: newSpanId() } }));
+  throwsInvalid(() => InvocationContext.create({ trace: { traceId: newTraceId(), spanId: '0000000000000000' } }));
+  throwsInvalid(() => InvocationContext.create({ deadline: Date.now(), timeout: 1 }));
+  throwsInvalid(() =>
+    InvocationContext.create({ traceParent: '', trace: { traceId: newTraceId(), spanId: newSpanId() } }),
+  );
+  throwsInvalid(() => InvocationContext.create({ deadline: Number.NaN }));
+});
+
+test('把任意取消信号翻译成原语层错误', () => {
+  assert.equal(cancellationOf(new AbortController().signal), undefined);
+  assert.equal(cancellationOf(AbortSignal.abort())?.code, InvocationErrorCode.Cancelled);
+  assert.equal(
+    cancellationOf(AbortSignal.abort(new DOMException('late', 'TimeoutError')))?.code,
+    InvocationErrorCode.DeadlineExceeded,
+  );
+  assert.equal(cancellationOf(AbortSignal.abort(new Error('boom')))?.code, InvocationErrorCode.Cancelled);
+});
