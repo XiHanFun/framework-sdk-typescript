@@ -299,14 +299,63 @@ test('错误的线上编码', () => {
   throwsCode(() => ErrorInfo.fromJSON({ code: 'bad' }), ErrorCode.InvalidArgument);
   throwsCode(() => ErrorInfo.fromJSON({ code: 'ORDERS_CONFLICT_001', message: 1 }), ErrorCode.InvalidArgument);
   throwsCode(() => ErrorInfo.fromJSON('ORDERS_CONFLICT_001'), ErrorCode.InvalidArgument);
-  // 空的 details 省略；线上只有码时消息就是码
+  // 空的 details 省略
   assert.equal(
     JSON.stringify(ErrorInfo.create('ORDERS_CONFLICT_001', 'orders.stale', {})),
     '{"code":"ORDERS_CONFLICT_001","message":"orders.stale","messageKey":"orders.stale"}',
   );
-  const bare = ErrorInfo.fromJSON({ code: 'ORDERS_CONFLICT_001', details: null, unknown: 1 });
-  assert.equal(bare.message, 'ORDERS_CONFLICT_001');
-  assert.equal(bare.details, undefined);
+  // 可选成员写成 null 不合法，message 必填
+  throwsCode(
+    () => ErrorInfo.fromJSON({ code: 'ORDERS_CONFLICT_001', message: 'x', details: null }),
+    ErrorCode.InvalidArgument,
+  );
+  throwsCode(() => ErrorInfo.fromJSON({ code: 'ORDERS_CONFLICT_001' }), ErrorCode.InvalidArgument);
+});
+
+/** 线上编码向量的一条样例 */
+interface WireCase {
+  readonly name: string;
+  readonly kind?: 'value' | 'unit' | 'maybe';
+  readonly json: unknown;
+  readonly canonical?: unknown;
+}
+
+/** 按样例的 kind 读出一条 Result 编码 */
+function readResult(wire: WireCase): unknown {
+  switch (wire.kind) {
+    case 'unit':
+      return Result.fromJSON(wire.json);
+    case 'maybe':
+      return Result.fromJSONMaybe(wire.json, (value) => value);
+    default:
+      return Result.fromJSON(wire.json, (value) => value);
+  }
+}
+
+test('Result 与 Error 的线上编码遵循向量', () => {
+  const vectors = vector<{
+    results: { valid: WireCase[]; invalid: WireCase[] };
+    errors: { valid: WireCase[]; invalid: WireCase[] };
+  }>('wire-encoding.json');
+  // 合法样例读得出，再写出时按 JSON 值等于规范形式；比较的是 JSON 值，不比较成员顺序
+  for (const wire of vectors.results.valid) {
+    const written = JSON.parse(JSON.stringify(readResult(wire)));
+    assert.deepEqual(written, wire.canonical ?? wire.json, wire.name);
+  }
+  for (const wire of vectors.results.invalid) {
+    throwsCode(() => readResult(wire), ErrorCode.InvalidArgument);
+  }
+  for (const wire of vectors.errors.valid) {
+    const written = JSON.parse(JSON.stringify(ErrorInfo.fromJSON(wire.json)));
+    assert.deepEqual(written, wire.canonical ?? wire.json, wire.name);
+  }
+  for (const wire of vectors.errors.invalid) {
+    assert.throws(
+      () => ErrorInfo.fromJSON(wire.json),
+      (error: unknown) => error instanceof FrameworkError && error.code === ErrorCode.InvalidArgument,
+      wire.name,
+    );
+  }
 });
 
 test('Result 的线上编码与组合', () => {
@@ -320,10 +369,14 @@ test('Result 的线上编码与组合', () => {
   assert.equal(decoded.ok ? undefined : decoded.error.code, 'ORDERS_CONFLICT_001');
   const value = Result.fromJSON({ ok: true, value: 5 }, (raw) => Number(raw));
   assert.equal(value.valueOr(0), 5);
-  // 没有值的成功：编码与 .NET 一致为 {"ok":true}，Go 的 {"ok":true,"value":{}} 也能还原
+  // 没有值的成功只写 {"ok":true}；带了 value 即不合法，{} 与 null 也一样（RFC-0001「Result」）
   assert.equal(JSON.stringify(Result.success()), '{"ok":true}');
   assert.ok(Result.fromJSON({ ok: true }).ok);
-  assert.ok(Result.fromJSON({ ok: true, value: {} }).ok);
+  throwsCode(() => Result.fromJSON({ ok: true, value: {} }), ErrorCode.InvalidArgument);
+  // 值类型是 Maybe 的结果：null 即无值，写出时也是 null
+  const none = Result.fromJSONMaybe({ ok: true, value: null }, (raw) => String(raw));
+  assert.ok(none.ok && !none.value.hasValue);
+  assert.equal(JSON.stringify(Result.ok(Maybe.none())), '{"ok":true,"value":null}');
   throwsCode(() => Result.fromJSON({ ok: true }, (raw) => raw), ErrorCode.InvalidArgument);
   throwsCode(() => Result.fromJSON({ ok: false }), ErrorCode.InvalidArgument);
   throwsCode(() => Result.fromJSON({ value: 1 }), ErrorCode.InvalidArgument);

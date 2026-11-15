@@ -2,6 +2,7 @@ import { ErrorCode } from './error-code.ts';
 import { ErrorInfo, type ErrorInfoJson } from './error-info.ts';
 import { FrameworkError } from './framework.ts';
 import { isPlainObject, type JsonValue } from './json.ts';
+import { Maybe } from './maybe.ts';
 
 /**
  * 成功或失败（RFC-0001 Result / Result&lt;T&gt;）：成功带值，失败带 {@link ErrorInfo}，二者互斥
@@ -167,40 +168,82 @@ export const Result = Object.freeze({
   },
 
   fromJSON,
+
+  /**
+   * 从线上编码还原值类型为 Maybe 的结果：`value` 必填，`null` 即无值，其他值交给 `decode` 转换
+   *
+   * @throws {@link FrameworkError} 不合 RFC-0001「Result」的读写规则时；`decode` 抛出的异常原样传出
+   */
+  fromJSONMaybe<T>(json: unknown, decode: (value: JsonValue) => T): Result<Maybe<T>> {
+    return read(json, (wire) => {
+      if (!Object.hasOwn(wire, 'value')) {
+        throw invalidWire('A successful result on the wire needs a value.');
+      }
+      const value = wire.value as JsonValue;
+      return Result.ok(value === null ? Maybe.none<T>() : Maybe.some(decode(value)));
+    });
+  },
 });
 
 /**
- * 从线上编码还原没有值的结果；成功时线上的 `value` 忽略
+ * 从线上编码还原没有值的结果
  *
- * @throws {@link FrameworkError} 不是 `{"ok":…}` 形态或失败没有错误时
+ * @remarks
+ * 读写规则见 RFC-0001「Result」：无值成功只能是 `{"ok":true}`，带了 `value`（含 `{}` 与 `null`）即不合法；
+ * 成功不能带 `error`，失败必须带 `error`、不能带 `value`；未知成员忽略
+ *
+ * @throws {@link FrameworkError} 不合规则时，码为 `PRIMITIVES_VALIDATION_001`
  */
 function fromJSON(json: unknown): Result<void>;
 /**
  * 从线上编码还原带值的结果，成功值交给 `decode` 转换
  *
- * @throws {@link FrameworkError} 形态不对、成功没有值或失败没有错误时；`decode` 抛出的异常原样传出
+ * @remarks
+ * 有值成功的 `value` 必填且不能是 `null`；值类型是 Maybe 时用 {@link Result.fromJSONMaybe}
+ *
+ * @throws {@link FrameworkError} 不合规则时；`decode` 抛出的异常原样传出
  */
 function fromJSON<T>(json: unknown, decode: (value: JsonValue) => T): Result<T>;
 function fromJSON<T>(json: unknown, decode?: (value: JsonValue) => T): Result<T> | Result<void> {
+  if (decode === undefined) {
+    return read<void>(json, (wire) => {
+      if (Object.hasOwn(wire, 'value')) {
+        throw invalidWire("A successful result without a value must not carry 'value' on the wire.");
+      }
+      return succeeded;
+    });
+  }
+  return read<T>(json, (wire) => {
+    if (!Object.hasOwn(wire, 'value')) {
+      throw invalidWire('A successful result on the wire needs a value.');
+    }
+    if (wire.value === null) {
+      throw invalidWire('The value of a successful result on the wire must not be null.');
+    }
+    return Result.ok(decode(wire.value as JsonValue));
+  });
+}
+
+/** 读出外层：`ok` 必填且是布尔，成功与失败互斥地带 `value` 或 `error`；成功的值交给 `success` 处理 */
+function read<T>(json: unknown, success: (wire: Record<string, unknown>) => Result<T>): Result<T> {
   if (!isPlainObject(json) || typeof json.ok !== 'boolean') {
-    throw new FrameworkError(
-      ErrorCode.InvalidArgument,
-      "A result on the wire must be a JSON object with a boolean 'ok'.",
-    );
+    throw invalidWire("A result on the wire must be a JSON object with a boolean 'ok'.");
   }
   if (json.ok) {
-    if (decode === undefined) {
-      return succeeded;
+    if (Object.hasOwn(json, 'error')) {
+      throw invalidWire("A successful result on the wire must not carry 'error'.");
     }
-    const value = json.value ?? undefined;
-    if (value === undefined) {
-      throw new FrameworkError(ErrorCode.InvalidArgument, 'A successful result on the wire needs a value.');
-    }
-    return Result.ok(decode(value as JsonValue));
+    return success(json);
   }
-  const error = json.error ?? undefined;
-  if (error === undefined) {
-    throw new FrameworkError(ErrorCode.InvalidArgument, 'A failed result on the wire needs an error.');
+  if (Object.hasOwn(json, 'value')) {
+    throw invalidWire("A failed result on the wire must not carry 'value'.");
   }
-  return Result.fail<T>(ErrorInfo.fromJSON(error));
+  if (!Object.hasOwn(json, 'error')) {
+    throw invalidWire('A failed result on the wire needs an error.');
+  }
+  return Result.fail<T>(ErrorInfo.fromJSON(json.error));
+}
+
+function invalidWire(message: string): FrameworkError {
+  return new FrameworkError(ErrorCode.InvalidArgument, message);
 }

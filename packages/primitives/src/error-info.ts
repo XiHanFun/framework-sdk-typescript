@@ -129,29 +129,39 @@ export class ErrorInfo {
    * 从线上编码还原
    *
    * @remarks
-   * 线上的 `message` 成为 {@link ErrorInfo.text}；未知字段忽略，`null` 视同没有
+   * 读写规则见 RFC-0001「Result」：`code` 必填且合文法，`message` 必填且非空，成为 {@link ErrorInfo.text}；
+   * `messageKey`、`details`、`inner` 可选，写了就必须合法，写成 `null` 不合法；未知成员忽略
    *
-   * @throws {@link FrameworkError} 不是对象、字段类型不对或错误码不合法时，码为 `PRIMITIVES_VALIDATION_001`
+   * @throws {@link FrameworkError} 不合规则时，码为 `PRIMITIVES_VALIDATION_001`
    */
   static fromJSON(value: unknown): ErrorInfo {
     if (!isPlainObject(value)) {
-      throw new FrameworkError(ErrorCode.InvalidArgument, 'An error on the wire must be a JSON object.');
+      throw invalidWire('An error on the wire must be a JSON object.');
     }
     const code = value.code;
     if (typeof code !== 'string' || !isErrorCode(code)) {
       throw invalidErrorCode(typeof code === 'string' ? code : String(code));
     }
-    const message = optionalWireString(value, 'message');
-    const messageKey = optionalWireString(value, 'messageKey');
-    const details = value.details ?? undefined;
-    const inner = value.inner ?? undefined;
-    return new ErrorInfo(
-      code,
-      messageKey === '' ? undefined : messageKey,
-      message === '' ? undefined : message,
-      details === undefined ? undefined : freezeJsonObject(details, 'details'),
-      inner === undefined ? undefined : ErrorInfo.fromJSON(inner),
-    );
+    const message = value.message;
+    if (typeof message !== 'string' || message === '') {
+      throw invalidWire("The field 'message' of an error on the wire must be a string that is not empty.");
+    }
+    let messageKey: string | undefined;
+    if (Object.hasOwn(value, 'messageKey')) {
+      if (typeof value.messageKey !== 'string' || !isMessageKey(value.messageKey)) {
+        throw invalidWire(`The message key '${String(value.messageKey)}' of an error on the wire is not valid.`);
+      }
+      messageKey = value.messageKey;
+    }
+    let details: JsonObject | undefined;
+    if (Object.hasOwn(value, 'details')) {
+      if (!isPlainObject(value.details)) {
+        throw invalidWire("The field 'details' of an error on the wire must be a JSON object.");
+      }
+      details = freezeJsonObject(value.details, 'details');
+    }
+    const inner = Object.hasOwn(value, 'inner') ? ErrorInfo.fromJSON(value.inner) : undefined;
+    return new ErrorInfo(code, messageKey, message, details, inner);
   }
 
   /** 错误码的 KIND 段 */
@@ -267,13 +277,6 @@ function copyDetails(details: JsonObject | undefined): JsonObject | undefined {
   return details === undefined ? undefined : freezeJsonObject(details, 'details');
 }
 
-function optionalWireString(value: Record<string, unknown>, field: string): string | undefined {
-  const text = value[field] ?? undefined;
-  if (text !== undefined && typeof text !== 'string') {
-    throw new FrameworkError(
-      ErrorCode.InvalidArgument,
-      `The field '${field}' of an error on the wire must be a string.`,
-    );
-  }
-  return text;
+function invalidWire(message: string): FrameworkError {
+  return new FrameworkError(ErrorCode.InvalidArgument, message);
 }
