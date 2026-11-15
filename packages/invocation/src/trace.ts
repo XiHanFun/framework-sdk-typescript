@@ -6,8 +6,13 @@ export interface TraceContext {
   readonly traceId: string;
   /** Span ID（W3C 的 parent-id）：16 位小写十六进制，不全为零 */
   readonly spanId: string;
-  /** 是否采样（trace-flags 的采样位 `01`） */
-  readonly sampled: boolean;
+  /**
+   * trace-flags，0–255；没有时表示没有上游，这次调用是链路的根（RFC-0003 第 7 条）
+   *
+   * @remarks
+   * 是否采样只看最低位，其余位原样保留、不解释
+   */
+  readonly flags?: number | undefined;
 }
 
 /** W3C traceparent：version-traceid-spanid-flags */
@@ -16,26 +21,40 @@ const traceIdPattern = /^[0-9a-f]{32}$/;
 const spanIdPattern = /^[0-9a-f]{16}$/;
 const allZero = /^0+$/;
 
+/** 没有上游、又没有采样器时写出的标志：按已采样传下去，由下游的采样器决定（RFC-0003 第 7 条「写出」） */
+const rootFlags = 0x01;
+
 /**
- * 解析 W3C traceparent；不合法（格式不对、ID 全为零）时为 `undefined`
+ * 解析 W3C traceparent；不合法（格式不对、版本是 `ff`、ID 全为零）时为 `undefined`
  */
 export function parseTraceParent(traceParent: string): TraceContext | undefined {
   const match = traceParentPattern.exec(traceParent);
   if (match === null) {
     return undefined;
   }
-  const [, , traceId = '', spanId = '', flags] = match;
-  if (allZero.test(traceId) || allZero.test(spanId)) {
+  const [, version, traceId = '', spanId = '', flags = ''] = match;
+  if (version === 'ff' || allZero.test(traceId) || allZero.test(spanId)) {
     return undefined;
   }
-  return { traceId, spanId, sampled: flags === '01' };
+  return { traceId, spanId, flags: Number.parseInt(flags, 16) };
 }
 
 /**
  * 格式化 W3C traceparent：`00-<trace-id>-<span-id>-<flags>`
+ *
+ * @remarks
+ * 标志总是两位十六进制：没有标志（根调用）写 `01`，上游给的标志（含 `00`）原样写出
  */
 export function formatTraceParent(trace: TraceContext): string {
-  return `00-${trace.traceId}-${trace.spanId}-${trace.sampled ? '01' : '00'}`;
+  const flags = (trace.flags ?? rootFlags).toString(16).padStart(2, '0');
+  return `00-${trace.traceId}-${trace.spanId}-${flags}`;
+}
+
+/**
+ * 判断标志是否表示采样：只看最低位；没有标志按已采样
+ */
+export function isSampled(flags: number | undefined): boolean {
+  return ((flags ?? rootFlags) & 0x01) === 0x01;
 }
 
 /**

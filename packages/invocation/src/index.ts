@@ -17,6 +17,7 @@ export {
 } from './context.ts';
 export {
   formatTraceParent,
+  isSampled,
   isSpanId,
   isTraceId,
   newSpanId,

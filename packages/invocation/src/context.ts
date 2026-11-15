@@ -8,7 +8,7 @@ import {
   isBaggageValueAcceptable,
 } from '@xihan-framework/primitives';
 
-import { formatTraceParent, isSpanId, isTraceId, newSpanId, newTraceId, parseTraceParent } from './trace.ts';
+import { formatTraceParent, isSampled, isSpanId, isTraceId, newSpanId, newTraceId, parseTraceParent } from './trace.ts';
 
 /**
  * 内核登记的、与调用上下文有关的错误码
@@ -80,7 +80,7 @@ export interface InvocationContextOptions {
   readonly timeout?: number;
   /** 上游的 W3C traceparent；不合法时忽略并生成新的追踪（RFC-0003 第 7 条）；与 `trace` 二选一 */
   readonly traceParent?: string;
-  /** 显式给出的追踪；不合法是编程错误；与 `traceParent` 二选一 */
+  /** 显式给出的追踪；不合法是编程错误；没给 `sampled` 时按上游已采样处理（RFC-0003 第 7 条）；与 `traceParent` 二选一 */
   readonly trace?: { readonly traceId: string; readonly spanId: string; readonly sampled?: boolean };
   /** Baggage；键必须符合 `xihan.<name>`，已登记键的值不合约束的成员丢弃（幂等键除外） */
   readonly baggage?: Readonly<Record<string, string>>;
@@ -94,7 +94,8 @@ interface State {
   readonly deadline: number | undefined;
   readonly traceId: string;
   readonly spanId: string;
-  readonly sampled: boolean;
+  /** trace-flags；没有时这次调用是链路的根 */
+  readonly flags: number | undefined;
   readonly baggage: Readonly<Record<string, string>>;
   /** 对象袋：派生上下文共享同一个 */
   readonly items: Map<object, unknown>;
@@ -119,7 +120,7 @@ export class InvocationContext {
    * 创建上下文
    *
    * @remarks
-   * 没有给出追踪时生成新的追踪 ID 与 Span ID，采样位为 `01`；有截止时间时到点中止 {@link InvocationContext.signal}
+   * 没有给出追踪时生成新的追踪 ID 与 Span ID，标志为空（写出时为 `01`）；有截止时间时到点中止 {@link InvocationContext.signal}
    *
    * @throws {@link FrameworkError} 选项互相冲突、追踪不合法、Baggage 键不合法时，码为 `PRIMITIVES_VALIDATION_001`
    */
@@ -191,12 +192,27 @@ export class InvocationContext {
     return this.#state.spanId;
   }
 
-  /** 是否采样 */
-  get sampled(): boolean {
-    return this.#state.sampled;
+  /**
+   * trace-flags；没有上游时为 `undefined`，这次调用是链路的根
+   *
+   * @remarks
+   * 上游的标志原样保留，包括采样位以外的位
+   */
+  get traceFlags(): number | undefined {
+    return this.#state.flags;
   }
 
-  /** W3C traceparent */
+  /** 是否采样：只看标志的最低位；根调用按已采样传下去 */
+  get sampled(): boolean {
+    return isSampled(this.#state.flags);
+  }
+
+  /**
+   * 写出的 W3C traceparent
+   *
+   * @remarks
+   * 标志总是两位十六进制：根调用写 `01`，上游给的 `00` 等标志原样写出（RFC-0003 第 7 条「写出」）
+   */
   get traceParent(): string {
     return formatTraceParent(this.#state);
   }
@@ -331,7 +347,13 @@ function timerSignal(delay: number): AbortSignal | undefined {
   return delay > maxTimerDelay ? undefined : AbortSignal.timeout(Math.ceil(delay));
 }
 
-function resolveTrace(options: InvocationContextOptions): Pick<State, 'traceId' | 'spanId' | 'sampled'> {
+/**
+ * 追踪的来源（RFC-0003 第 7 条）
+ *
+ * @remarks
+ * 显式给出的追踪没给 `sampled` 按上游已采样处理；合法的 traceparent 连同标志原样取；都没有时生成 ID，标志为空，这次调用是根
+ */
+function resolveTrace(options: InvocationContextOptions): Pick<State, 'traceId' | 'spanId' | 'flags'> {
   if (options.trace !== undefined) {
     const { traceId, spanId, sampled = true } = options.trace;
     if (!isTraceId(traceId)) {
@@ -340,10 +362,12 @@ function resolveTrace(options: InvocationContextOptions): Pick<State, 'traceId' 
     if (!isSpanId(spanId)) {
       throw invalid(`The span ID '${spanId}' must be 16 lowercase hexadecimal digits that are not all zero.`);
     }
-    return { traceId, spanId, sampled };
+    return { traceId, spanId, flags: sampled ? 0x01 : 0x00 };
   }
   const parsed = options.traceParent === undefined ? undefined : parseTraceParent(options.traceParent);
-  return parsed ?? { traceId: newTraceId(), spanId: newSpanId(), sampled: true };
+  return parsed === undefined
+    ? { traceId: newTraceId(), spanId: newSpanId(), flags: undefined }
+    : { traceId: parsed.traceId, spanId: parsed.spanId, flags: parsed.flags };
 }
 
 /**
