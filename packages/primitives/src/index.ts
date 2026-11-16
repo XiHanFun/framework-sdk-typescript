@@ -28,6 +28,7 @@ export {
 export { ErrorInfo, type ErrorInfoJson } from './error-info.ts';
 export { FrameworkError, type FrameworkErrorOptions, FrameworkInfo } from './framework.ts';
 export {
+  defineMember,
   Float64,
   freezeJsonObject,
   isIntegerNumber,

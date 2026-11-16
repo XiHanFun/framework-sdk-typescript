@@ -30,6 +30,12 @@ export {
   type OperationRequest,
   type OperationResponse,
   type OperationSchema,
-  RequestDecodeError,
-  type RequestDecoder,
 } from './registry.ts';
+export {
+  RequestDecodeError,
+  RequestShape,
+  type RequestShapeMembers,
+  type RequestShapeObject,
+  type RequestShapeType,
+  RequiredMember,
+} from './request-shape.ts';

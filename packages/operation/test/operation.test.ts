@@ -16,24 +16,26 @@ import {
   OperationMessageKey,
   OperationRegistry,
   RequestDecodeError,
+  RequestShape,
+  type RequestShapeType,
 } from '@xihan-framework/operation';
 import { middleware, PipelineBuilder, PipelineErrorCode, Placement } from '@xihan-framework/pipeline';
 import {
   BaggageKey,
   ErrorCode,
   ErrorInfo,
+  Float64,
   FrameworkError,
   formatMessage,
   isPlainObject,
   JsonPath,
-  type JsonValue,
   PipelineStage,
   Result,
   Stability,
 } from '@xihan-framework/primitives';
 
 interface CreateOrder {
-  readonly quantity: number;
+  readonly quantity?: number;
 }
 
 interface OrderCreated {
@@ -41,17 +43,8 @@ interface OrderCreated {
   readonly quantity: number;
 }
 
-/** 手写解码器：与 Go 的 json.Unmarshal 一样，缺省字段取零值，类型不符时报路径 */
-function decodeCreateOrder(value: JsonValue): CreateOrder {
-  if (!isPlainObject(value)) {
-    throw new RequestDecodeError('$', '$ must be an object');
-  }
-  const quantity = value.quantity ?? 0;
-  if (typeof quantity !== 'number') {
-    throw new RequestDecodeError('$.quantity', '$.quantity must be a number');
-  }
-  return { quantity };
-}
+/** 请求的形状：quantity 是可选的 32 位整数，没有给出时处理器按 0 处理 */
+const createOrderShape = RequestShape.object({ quantity: RequestShape.int32() });
 
 const createOrder = defineContract<CreateOrder, OrderCreated>({
   id: 'orders.create',
@@ -63,14 +56,13 @@ function newInvoker(builder?: PipelineBuilder): OperationInvoker {
   const registry = new OperationRegistry();
   registry.add({
     contract: createOrder,
-    decode: decodeCreateOrder,
+    request: createOrderShape,
     handler: async (context, request) => {
-      if (request.quantity <= 0) {
-        return Result.fail(
-          ErrorInfo.validation('ORDERS_VALIDATION_001', 'orders.quantity.invalid', { quantity: request.quantity }),
-        );
+      const quantity = request.quantity ?? 0;
+      if (quantity <= 0) {
+        return Result.fail(ErrorInfo.validation('ORDERS_VALIDATION_001', 'orders.quantity.invalid', { quantity }));
       }
-      return Result.ok({ id: `o-${context.correlation ?? ''}`, quantity: request.quantity });
+      return Result.ok({ id: `o-${context.correlation ?? ''}`, quantity });
     },
     schema: { request: '{}', response: '{}' },
   });
@@ -119,8 +111,14 @@ test('调用经过完整管道并编码响应', async () => {
   }
   const empty = await invoker.invoke(InvocationContext.create(), { id: 'orders.create' });
   assert.equal(codeOf(empty.outcome), 'ORDERS_VALIDATION_001', 'an empty payload is {}');
+  const zeroLength = await invoker.invoke(InvocationContext.create(), {
+    id: 'orders.create',
+    payload: new Uint8Array(),
+  });
+  assert.equal(codeOf(zeroLength.outcome), 'ORDERS_VALIDATION_001', 'a zero-length payload is {}');
+  // 只有空白不是 JSON（RFC-0001「JSON 文本」）
   const blank = await invoker.invoke(InvocationContext.create(), { id: 'orders.create', payload: ' \n ' });
-  assert.equal(codeOf(blank.outcome), 'ORDERS_VALIDATION_001', 'a blank payload is {}');
+  assert.equal(codeOf(blank.outcome), OperationErrorCode.InvalidPayload, 'a blank payload is not JSON');
 });
 
 test('载荷不合法的细节：消息键、id 与只写结论的 reason', async () => {
@@ -246,7 +244,7 @@ test('中间件的短路与派生上下文', async () => {
 test('响应无法编码为 JSON 时是 KERNEL_UNEXPECTED_001', async () => {
   const registry = new OperationRegistry();
   const contract = defineContract<Record<string, never>, { big: bigint }>({ id: 'numbers.get', expose: [] });
-  registry.add({ contract, decode: () => ({}), handler: async () => Result.ok({ big: 1n }) });
+  registry.add({ contract, request: RequestShape.object({}), handler: async () => Result.ok({ big: 1n }) });
   const descriptor = registry.find('numbers.get');
   assert.ok(descriptor);
   const response = await descriptor.execute(InvocationContext.create());
@@ -258,9 +256,9 @@ test('响应无法编码为 JSON 时是 KERNEL_UNEXPECTED_001', async () => {
 test('登记表拒绝重复、不合法的 ID 与契约', () => {
   const registry = new OperationRegistry();
   const handler = async () => Result.ok({});
-  const decode = () => ({});
+  const request = RequestShape.object({});
   throwsCode(
-    () => registry.add({ contract: { id: 'Orders.Create', stability: 'stable', expose: [] }, handler, decode }),
+    () => registry.add({ contract: { id: 'Orders.Create', stability: 'stable', expose: [] }, handler, request }),
     ErrorCode.InvalidArgument,
   );
   throwsCode(
@@ -280,16 +278,17 @@ test('登记表拒绝重复、不合法的 ID 与契约', () => {
   assert.equal(contract.stability, Stability.Stable, 'stability defaults to stable');
   assert.ok(Object.isFrozen(contract) && Object.isFrozen(contract.expose));
   throwsCode(
-    () => registry.add({ contract, handler, decode, schema: { request: '[]', response: '{}' } }),
+    () => registry.add({ contract, handler, request, schema: { request: '[]', response: '{}' } }),
     ErrorCode.InvalidArgument,
   );
-  throwsCode(() => registry.add({ contract, handler, decode, owner: '' }), ErrorCode.InvalidArgument);
-  throwsCode(() => registry.add({ contract, handler: undefined as never, decode }), ErrorCode.InvalidArgument);
+  throwsCode(() => registry.add({ contract, handler, request, owner: '' }), ErrorCode.InvalidArgument);
+  throwsCode(() => registry.add({ contract, handler: undefined as never, request }), ErrorCode.InvalidArgument);
+  throwsCode(() => registry.add({ contract, handler, request: (() => ({})) as never }), ErrorCode.InvalidArgument);
   assert.equal(registry.size, 0, 'rejected registrations are not kept');
 
-  registry.add({ contract, handler, decode });
+  registry.add({ contract, handler, request });
   assert.throws(
-    () => registry.add({ contract, handler, decode }),
+    () => registry.add({ contract, handler, request }),
     (error: unknown) =>
       error instanceof FrameworkError &&
       error.code === OperationErrorCode.Duplicate &&
@@ -308,14 +307,14 @@ test('登记表容量 10000，按 ID 升序列出', () => {
   assert.equal(OperationRegistry.capacity, 10_000);
   const registry = new OperationRegistry();
   const handler = async () => Result.ok({});
-  const decode = () => ({});
+  const request = RequestShape.object({});
   for (let index = OperationRegistry.capacity - 1; index >= 0; index -= 1) {
     const contract: OperationContract = { id: `items${index}.list`, stability: Stability.Stable, expose: [] };
-    registry.add({ contract, handler, decode, owner: 'xihan.samples.bulk' });
+    registry.add({ contract, handler, request, owner: 'xihan.samples.bulk' });
   }
   assert.equal(registry.size, OperationRegistry.capacity);
   assert.throws(
-    () => registry.add({ contract: { id: 'overflow.list', stability: 'stable', expose: [] }, handler, decode }),
+    () => registry.add({ contract: { id: 'overflow.list', stability: 'stable', expose: [] }, handler, request }),
     (error: unknown) =>
       error instanceof FrameworkError &&
       error.code === OperationErrorCode.RegistryFull &&
@@ -375,12 +374,13 @@ test('抛出的异常翻译为失败：未处理的是 KERNEL_UNEXPECTED_001，�
   const contract = defineContract<{ readonly mode: string }, string>({ id: 'faults.raise', expose: [] });
   registry.add({
     contract,
-    decode: (value) => {
+    // 自定义形状：解码函数报告的路径照用
+    request: RequestShape.custom((value, path) => {
       if (!isPlainObject(value) || typeof value.mode !== 'string') {
-        throw new RequestDecodeError('$.mode');
+        throw new RequestDecodeError(JsonPath.member(path, 'mode'));
       }
       return { mode: value.mode };
-    },
+    }),
     handler: async (context, request) => {
       switch (request.mode) {
         case 'framework':
@@ -437,6 +437,8 @@ test('抛出的异常翻译为失败：未处理的是 KERNEL_UNEXPECTED_001，�
   );
   const broken = await failing.invoke(InvocationContext.create(), { id: 'faults.raise', payload: '{"mode":"plain"}' });
   assert.equal(codeOf(broken.outcome), OperationErrorCode.Unexpected);
+  const decodeFailure = await invoker.invoke(InvocationContext.create(), { id: 'faults.raise', payload: '{"mode":1}' });
+  assert.equal(decodeFailure.outcome.ok ? undefined : decodeFailure.outcome.error.details?.reason, '$.mode');
 });
 
 test('截止时间已过才开始的调用在第一个中间件之前结束', async () => {
@@ -473,81 +475,109 @@ test('截止时间已过才开始的调用在第一个中间件之前结束', as
   assert.equal(entered, 1);
 });
 
-/** 向量的整数字典：成员值都是整数 */
-function decodeCounts(value: JsonValue): Record<string, number> {
-  if (!isPlainObject(value)) {
-    throw new RequestDecodeError(JsonPath.root);
-  }
-  const counts: Record<string, number> = {};
-  for (const [name, count] of Object.entries(value)) {
-    if (typeof count !== 'number' || !Number.isInteger(count)) {
-      throw new RequestDecodeError(JsonPath.member(JsonPath.root, name));
-    }
-    counts[name] = count;
-  }
-  return counts;
-}
+/** 向量的三个请求类型（payload-reasons.json 的 requests） */
+const vectorShapes = {
+  // 对象，成员值都是 32 位整数（整数字典）
+  counts: RequestShape.record(RequestShape.int32()),
+  // 对象：lines 是可选的数组，每项是对象，quantity 是可选的 32 位整数
+  order: RequestShape.object({ lines: RequestShape.array(RequestShape.object({ quantity: RequestShape.int32() })) }),
+  profile: RequestShape.object({
+    name: RequestShape.required(RequestShape.string()),
+    note: RequestShape.string(),
+    count: RequestShape.int64(),
+    ratio: RequestShape.float64(),
+    flag: RequestShape.boolean(),
+    tags: RequestShape.array(RequestShape.string()),
+    scores: RequestShape.array(RequestShape.int64()),
+    inner: RequestShape.object({ n: RequestShape.required(RequestShape.int64()) }),
+    meta: RequestShape.json(),
+  }),
+};
 
-/** 向量的订单：lines 是数组，每项是对象，quantity 是整数；缺少成员不算类型不符（规范不作规定） */
-function decodeOrder(value: JsonValue): { readonly lines: readonly { readonly quantity: number }[] } {
-  if (!isPlainObject(value)) {
-    throw new RequestDecodeError(JsonPath.root);
-  }
-  const linesPath = JsonPath.member(JsonPath.root, 'lines');
-  const lines = value.lines ?? [];
-  if (!Array.isArray(lines)) {
-    throw new RequestDecodeError(linesPath);
-  }
-  return {
-    lines: lines.map((line, index) => {
-      const linePath = JsonPath.index(linesPath, index);
-      if (!isPlainObject(line)) {
-        throw new RequestDecodeError(linePath);
-      }
-      const quantity = line.quantity ?? 0;
-      if (typeof quantity !== 'number' || !Number.isInteger(quantity)) {
-        throw new RequestDecodeError(JsonPath.member(linePath, 'quantity'));
-      }
-      return { quantity };
-    }),
-  };
-}
-
-test('载荷不合法的 reason 遵循 payload-reasons.json', async () => {
+test('载荷的解码遵循 payload-reasons.json', async () => {
   const url = new URL('../../../spec/conformance/vectors/operations/payload-reasons.json', import.meta.url);
   const vectors = JSON.parse(readFileSync(url, 'utf8')) as {
-    cases: { name: string; request: 'counts' | 'order'; payload: string; reason: string }[];
-    syntaxErrors: { request: 'counts' | 'order'; payload: string }[];
+    requests: Record<keyof typeof vectorShapes, string>;
+    cases: { name: string; request: keyof typeof vectorShapes; payload: string; reason: string | null }[];
   };
+  assert.deepEqual(Object.keys(vectors.requests).sort(), Object.keys(vectorShapes).sort());
   const registry = new OperationRegistry();
-  const contracts = {
-    counts: defineContract<Record<string, number>, string>({ id: 'counts.update', expose: [] }),
-    order: defineContract<{ readonly lines: readonly { readonly quantity: number }[] }, string>({
-      id: 'orders.place',
-      expose: [],
-    }),
-  };
-  registry.add({ contract: contracts.counts, decode: decodeCounts, handler: async () => Result.ok('ok') });
-  registry.add({ contract: contracts.order, decode: decodeOrder, handler: async () => Result.ok('ok') });
+  const decoded = new Map<string, unknown>();
+  for (const [name, shape] of Object.entries(vectorShapes)) {
+    registry.add({
+      contract: defineContract<unknown, string>({ id: `${name}.update`, expose: [] }),
+      request: shape,
+      handler: async (_context, request) => {
+        decoded.set(name, request);
+        return Result.ok('ok');
+      },
+    });
+  }
   const invoker = new OperationInvoker(registry);
-  const reasonOf = async (request: 'counts' | 'order', payload: string) => {
-    const response = await invoker.invoke(InvocationContext.create(), { id: contracts[request].id, payload });
-    assert.ok(!response.outcome.ok, payload);
-    assert.equal(response.outcome.error.code, OperationErrorCode.InvalidPayload);
-    assert.equal(response.outcome.error.messageKey, OperationMessageKey.InvalidPayload);
-    return response.outcome.error.details?.reason;
-  };
   for (const c of vectors.cases) {
-    assert.equal(await reasonOf(c.request, c.payload), c.reason, c.name);
+    // 载荷按 UTF-8 编码交给解码，与字符串入口结果相同
+    for (const payload of [c.payload, new TextEncoder().encode(c.payload)]) {
+      const response = await invoker.invoke(InvocationContext.create(), { id: `${c.request}.update`, payload });
+      if (c.reason === null) {
+        assert.ok(response.outcome.ok, c.name);
+        assert.equal(response.payload, '"ok"');
+      } else {
+        assert.ok(!response.outcome.ok, c.name);
+        assert.equal(response.outcome.error.code, OperationErrorCode.InvalidPayload, c.name);
+        assert.equal(response.outcome.error.messageKey, OperationMessageKey.InvalidPayload, c.name);
+        assert.deepEqual(response.outcome.error.details, { id: `${c.request}.update`, reason: c.reason }, c.name);
+      }
+    }
   }
-  for (const c of vectors.syntaxErrors) {
-    const reason = await reasonOf(c.request, c.payload);
-    assert.ok(typeof reason === 'string' && reason.startsWith('$'), `${c.payload} gives ${String(reason)}`);
-  }
-  // 合法的载荷照常执行
-  const ok = await invoker.invoke(InvocationContext.create(), {
-    id: 'orders.place',
-    payload: '{"lines":[{"quantity":2}]}',
+});
+
+test('按形状构建的请求', async () => {
+  const registry = new OperationRegistry();
+  const contract = defineContract<RequestShapeType<typeof vectorShapes.profile>, string>({
+    id: 'profiles.update',
+    expose: [],
   });
-  assert.equal(ok.payload, '"ok"');
+  let seen: unknown;
+  registry.add({
+    contract,
+    request: vectorShapes.profile,
+    handler: async (_context, request) => {
+      seen = request;
+      return Result.ok('ok');
+    },
+  });
+  const invoker = new OperationInvoker(registry);
+  const payload =
+    '{"name":null,"x":1,"count":9223372036854775807,"ratio":5,"tags":["a",null],"scores":[1,-0],"inner":{"n":2},"meta":{"k":[1.0]},"flag":false}';
+  assert.ok((await invoker.invoke(InvocationContext.create(), { id: 'profiles.update', payload })).outcome.ok);
+  assert.deepEqual(seen, {
+    name: null,
+    count: 9223372036854775807n,
+    ratio: 5,
+    tags: ['a', null],
+    scores: [1n, 0n],
+    inner: { n: 2n },
+    meta: { k: [new Float64(1)] },
+    flag: false,
+  });
+  // 成员名 __proto__ 是普通成员
+  const counts = new OperationRegistry();
+  let record: unknown;
+  counts.add({
+    contract: defineContract<unknown, string>({ id: 'counts.update', expose: [] }),
+    request: vectorShapes.counts,
+    handler: async (_context, request) => {
+      record = request;
+      return Result.ok('ok');
+    },
+  });
+  await new OperationInvoker(counts).invoke(InvocationContext.create(), {
+    id: 'counts.update',
+    payload: '{"__proto__":1,"2":2,"1":3}',
+  });
+  assert.ok(typeof record === 'object' && record !== null && Object.hasOwn(record, '__proto__'));
+  assert.equal(Object.getPrototypeOf(record), Object.prototype);
+  throwsCode(() => RequestShape.array(undefined as never), ErrorCode.InvalidArgument);
+  throwsCode(() => RequestShape.object({ a: 1 as never }), ErrorCode.InvalidArgument);
+  throwsCode(() => RequestShape.custom(undefined as never), ErrorCode.InvalidArgument);
 });

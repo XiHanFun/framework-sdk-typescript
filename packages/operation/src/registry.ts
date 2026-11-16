@@ -5,11 +5,13 @@ import {
   ErrorInfo,
   FrameworkError,
   isPlainObject,
-  type JsonValue,
+  JsonPath,
   Result,
+  readJsonText,
 } from '@xihan-framework/primitives';
 
 import { checkContract, type OperationContract, OperationErrorCode, OperationMessageKey } from './contract.ts';
+import { RequestDecodeError, RequestShape } from './request-shape.ts';
 
 /**
  * 请求与响应的 JSON Schema（draft 2020-12）文本；两段都必须是 JSON 对象（RFC-0011）
@@ -27,7 +29,7 @@ export interface OperationSchema {
 export interface OperationRequest {
   /** 操作 ID */
   readonly id: string;
-  /** 请求的 JSON 文本或 UTF-8 字节；没有或只有空白时等价于 `{}` */
+  /** 请求的 JSON 文本或 UTF-8 字节；没有或长度为零时等价于 `{}`，只有空白不是 JSON */
   readonly payload?: string | Uint8Array;
 }
 
@@ -47,40 +49,6 @@ export interface OperationResponse {
 export type OperationHandler<Req, Res> = (context: InvocationContext, request: Req) => Promise<Result<Res>>;
 
 /**
- * 把已解析的 JSON 载荷转成请求类型
- *
- * @remarks
- * 载荷与请求类型不符时抛出。`KERNEL_VALIDATION_001` 细节里的 `reason` 只写出错位置的 JSON 路径（RFC-0011 规则 2）：
- * 抛出 {@link RequestDecodeError}（或任何带 `$` 开头的字符串 `path` 成员的错误）时取它的路径，路径用 {@link JsonPath} 拼；
- * 其他异常写 `$`；可以直接用 Schema 库的解析函数
- */
-export type RequestDecoder<Req> = (value: JsonValue) => Req;
-
-/**
- * 解码器报告载荷与请求类型不符的位置
- *
- * @example
- * ```ts
- * if (typeof value.quantity !== 'number') throw new RequestDecodeError('$.quantity');
- * ```
- */
-export class RequestDecodeError extends Error {
-  /** 错误名 */
-  override readonly name = 'RequestDecodeError';
-  /** 出错位置的 JSON 路径，以 `$` 开头，如 `$.lines[0].quantity` */
-  readonly path: string;
-
-  /**
-   * @param path - 出错位置的 JSON 路径
-   * @param message - 给开发者看的说明，不上线；缺省为路径
-   */
-  constructor(path: string, message?: string) {
-    super(message ?? path);
-    this.path = path;
-  }
-}
-
-/**
  * 一次登记
  */
 export interface OperationRegistration<Req, Res> {
@@ -88,8 +56,8 @@ export interface OperationRegistration<Req, Res> {
   readonly contract: OperationContract<Req, Res>;
   /** 处理器 */
   readonly handler: OperationHandler<Req, Res>;
-  /** 请求解码器：XGI 调用用它把 JSON 载荷转成请求 */
-  readonly decode: RequestDecoder<Req>;
+  /** 请求的形状：XGI 调用按它解码 JSON 载荷（RFC-0011 规则 2） */
+  readonly request: RequestShape<Req | null>;
   /** 请求与响应的 Schema */
   readonly schema?: OperationSchema;
   /** 归属：清单 ID，缺省为 `app` */
@@ -99,7 +67,7 @@ export interface OperationRegistration<Req, Res> {
 /** 描述的内部入口：调用器用，不对外 */
 interface Internals {
   readonly handler: OperationHandler<unknown, unknown>;
-  readonly decode: RequestDecoder<unknown>;
+  readonly request: RequestShape<unknown>;
 }
 
 const internals = new WeakMap<OperationDescriptor, Internals>();
@@ -120,7 +88,7 @@ export class OperationDescriptor {
     this.contract = registration.contract;
     this.schema = registration.schema === undefined ? undefined : Object.freeze({ ...registration.schema });
     this.owner = registration.owner ?? AppOwner;
-    internals.set(this, { handler: registration.handler, decode: registration.decode });
+    internals.set(this, { handler: registration.handler, request: registration.request });
     Object.freeze(this);
   }
 
@@ -128,11 +96,11 @@ export class OperationDescriptor {
    * 解码载荷、执行、编码响应；不经管道
    *
    * @remarks
-   * 宿主端点已在管道里时用它。载荷不合法为 `KERNEL_VALIDATION_001`，响应无法编码为 JSON 时为 `KERNEL_UNEXPECTED_001`
+   * 宿主端点已在管道里时用它。载荷不合法为 `KERNEL_VALIDATION_001`（见 {@link decodePayload}），响应无法编码为 JSON 时为 `KERNEL_UNEXPECTED_001`
    */
   async execute(context: InvocationContext, payload?: string | Uint8Array): Promise<OperationResponse> {
-    const { handler, decode } = internalsOf(this);
-    const request = decodePayload(this.contract.id, payload, decode);
+    const { handler, request: shape } = internalsOf(this);
+    const request = decodePayload(this.contract.id, payload, shape);
     if (!request.ok) {
       return { outcome: request.toVoid(), payload: undefined };
     }
@@ -184,8 +152,8 @@ export class OperationRegistry {
     if (typeof registration.handler !== 'function') {
       throw invalid(`The operation '${contract.id}' needs a handler function.`);
     }
-    if (typeof registration.decode !== 'function') {
-      throw invalid(`The operation '${contract.id}' needs a request decoder.`);
+    if (!(registration.request instanceof RequestShape)) {
+      throw invalid(`The operation '${contract.id}' needs a request shape.`);
     }
     if (registration.owner !== undefined && (typeof registration.owner !== 'string' || registration.owner === '')) {
       throw invalid(`The owner of the operation '${contract.id}' must not be empty.`);
@@ -246,59 +214,43 @@ export function notFound(id: string): ErrorInfo {
   return ErrorInfo.notFound(OperationErrorCode.NotFound, OperationMessageKey.NotFound, { id });
 }
 
-/** 严格的 UTF-8：坏字节即失败；保留 BOM，让带 BOM 的载荷与 Go 一样按非 JSON 拒绝 */
-const utf8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
-
-/** 载荷整体不合法时的路径：JSON 的根 */
-const rootPath = '$';
-
 /**
- * 解码载荷：空等价于 `{}`；非 UTF-8、非 JSON、`null` 或解码器拒绝都是 `KERNEL_VALIDATION_001`
+ * 解码载荷（RFC-0011 规则 2，ADR-0236）
  *
  * @remarks
- * `reason` 只写出错位置的 JSON 路径（RFC-0011 规则 2，ADR-0235）：载荷是 `null`、不是 UTF-8 或语法不对时写 `$`，
- * 不带解析器的报错原文，它会引用载荷片段或类型名；值的类型不符时取解码器报告的路径（见 {@link JsonPath}）
+ * 没有或长度为零的载荷等价于 `{}`。先过共同的 JSON 读取检查：语法错误（含 BOM、嵌套超过 64 层、非法 UTF-8、孤立的代理项）
+ * 的 `reason` 一律是 `$`，任何一层有重复成员时是第一处重复的路径，先于其他问题；再按请求的形状在文本顺序里报第一处不符；
+ * 最后构建请求，自定义形状报告的路径照用，请求是 `null`（如载荷是字面量 `null`）时为 `$`。失败都是 `KERNEL_VALIDATION_001`
+ *
+ * @internal
  */
-function decodePayload(
+export function decodePayload(
   id: string,
   payload: string | Uint8Array | undefined,
-  decode: RequestDecoder<unknown>,
+  shape: RequestShape<unknown>,
 ): Result<unknown> {
-  let text: string;
-  try {
-    text = payload === undefined ? '' : typeof payload === 'string' ? payload : utf8.decode(payload);
-  } catch {
-    return invalidPayload(id, rootPath);
+  const read = readJsonText(payload === undefined || payload.length === 0 ? '{}' : payload);
+  if (!read.ok) {
+    return invalidPayload(id, read.problem.path);
   }
-  if (text.trim() === '') {
-    text = '{}';
-  }
-  let value: JsonValue;
-  try {
-    value = JSON.parse(text) as JsonValue;
-  } catch {
-    return invalidPayload(id, rootPath);
-  }
-  if (value === null) {
-    return invalidPayload(id, rootPath);
+  const problem = shape.check(read.root, JsonPath.root);
+  if (problem !== undefined) {
+    return invalidPayload(id, problem);
   }
   let request: unknown;
   try {
-    request = decode(value);
+    request = shape.build(read.root, JsonPath.root);
   } catch (error) {
-    return invalidPayload(id, pathOf(error));
+    if (error instanceof RequestDecodeError) {
+      return invalidPayload(id, error.path.startsWith(JsonPath.root) ? error.path : JsonPath.root);
+    }
+    throw error;
   }
-  // 请求与成功值一样不能为空：解码器返回空值说明载荷没有给出请求
+  // 请求与成功值一样不能为空：载荷是 null 时没有给出请求
   if (request === null || request === undefined) {
-    return invalidPayload(id, rootPath);
+    return invalidPayload(id, JsonPath.root);
   }
   return Result.ok(request);
-}
-
-/** 解码器报告的路径：带 `$` 开头的字符串 `path` 成员时取它，否则是根 */
-function pathOf(error: unknown): string {
-  const path = typeof error === 'object' && error !== null ? (error as { path?: unknown }).path : undefined;
-  return typeof path === 'string' && path.startsWith(rootPath) ? path : rootPath;
 }
 
 function invalidPayload(id: string, reason: string): Result<never> {
@@ -307,8 +259,12 @@ function invalidPayload(id: string, reason: string): Result<never> {
   );
 }
 
-/** 编码响应；值无法编码为 JSON（bigint、循环引用、函数）时是 `KERNEL_UNEXPECTED_001` */
-function encodeResponse(id: string, value: unknown): Result<string> {
+/**
+ * 编码响应；值无法编码为 JSON（bigint、循环引用、函数）时是 `KERNEL_UNEXPECTED_001`
+ *
+ * @internal
+ */
+export function encodeResponse(id: string, value: unknown): Result<string> {
   let reason: string;
   try {
     const json = JSON.stringify(value);
