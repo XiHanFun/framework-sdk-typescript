@@ -12,7 +12,8 @@ export const PrimitivesMessageKey = Object.freeze({
  * SDK 自带的默认英文模板：原语层与内核里 SDK 会用到的消息键
  *
  * @remarks
- * 与 spec/conformance/vectors/primitives/kernel-messages.json 逐字相同（RFC-0011「错误码」，模板以 .NET 的 en-US 为准）
+ * 与 spec/conformance/vectors/primitives/kernel-messages.json 逐字相同（RFC-0011「错误码」，模板以 .NET 的 en-US 为准）；
+ * 清单读取的 `kernel.manifest.*` 与 `primitives.manifest.*` 不在向量里，取自 .NET 内核与原语层的语言文件（RFC-0002 解析规则 2）
  */
 export const builtInTemplates: Readonly<Record<string, string>> = Object.freeze({
   'primitives.result.uninitialized': 'The result is uninitialized: a default value is not a valid result.',
@@ -27,6 +28,19 @@ export const builtInTemplates: Readonly<Record<string, string>> = Object.freeze(
   'kernel.operation.no_response': "Operation '{id}' completed without producing a response.",
   'kernel.operation.duplicate': "Operation '{id}' is already registered by '{owner}'.",
   'kernel.operation.registry_full': 'The operation registry has reached its capacity of {capacity}.',
+  'kernel.manifest.empty': 'The manifest is empty.',
+  'kernel.manifest.file_missing': "Manifest file '{path}' does not exist.",
+  'kernel.manifest.invalid': 'The manifest is not valid: {reason}',
+  'kernel.manifest.invalid_json': 'The manifest is not valid JSON: {reason}',
+  'primitives.manifest.duplicate_bindings':
+    "Manifest '{id}' declares the same binding name more than once in 'bindings'.",
+  'primitives.manifest.duplicate_provides':
+    "Manifest '{id}' declares the same capability ID more than once in 'provides'.",
+  'primitives.manifest.duplicate_requires':
+    "Manifest '{id}' declares the same capability ID more than once in 'requires'.",
+  'primitives.manifest.isolation_not_allowed':
+    "Manifest '{id}' is not a plugin and must not declare 'isolation' or 'permissions'.",
+  'primitives.manifest.isolation_required': "Plugin manifest '{id}' must declare 'isolation'.",
 });
 
 /**
