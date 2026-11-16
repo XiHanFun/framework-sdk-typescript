@@ -16,6 +16,7 @@ import {
   FrameworkError,
   FrameworkInfo,
   formatMessage,
+  formatValue,
   isBaggageKeyRegistered,
   isBaggageKeyWellFormed,
   isBaggageValueAcceptable,
@@ -41,6 +42,7 @@ import {
   maxJsonDepth,
   messageKeyDomain,
   minInt64,
+  numberSymbols,
   PipelineStage,
   PrimitivesMessageKey,
   parseJson,
@@ -353,6 +355,7 @@ test('消息键、模板格式化与 Describe 遵循向量', () => {
       name: string;
       template: string;
       arguments: Record<string, unknown> | null;
+      locale?: string;
       lenient: string;
       strict: string | null;
     }[];
@@ -364,11 +367,15 @@ test('消息键、模板格式化与 Describe 遵循向量', () => {
   for (const key of vectors.keys.invalid) {
     assert.ok(!isMessageKey(key), `${key} must be invalid`);
   }
-  // 向量的 null 参数表示没有参数；参数值按 JSON 的原类型交给格式化
+  // 向量的 null 参数表示没有参数；参数值按值模型的原类型交给格式化，locale 只决定小数点与分组符
   for (const c of vectors.format) {
     const args = c.arguments ?? undefined;
-    assert.equal(formatMessage(c.template, args), c.lenient, `${c.name} (lenient)`);
-    assert.equal(tryFormatMessage(c.template, args), c.strict ?? undefined, `${c.name} (strict)`);
+    assert.equal(formatMessage(c.template, args, c.locale), c.lenient, `${c.name} (lenient)`);
+    assert.equal(tryFormatMessage(c.template, args, c.locale), c.strict ?? undefined, `${c.name} (strict)`);
+    // 消息目录按命中的区域取数字符号
+    const locale = c.locale ?? 'en-US';
+    const catalog = new MessageCatalog({ [locale]: { 'vectors.template': c.template } });
+    assert.equal(catalog.resolve('vectors.template', locale, args), c.strict ?? undefined, `${c.name} (catalog)`);
   }
   for (const c of vectors.describe) {
     assert.equal(describe(c.key, c.arguments ?? undefined), c.text, c.key);
@@ -633,9 +640,40 @@ test('JSON 写不出的数值：非数、无穷与 bigint', () => {
   );
   assert.equal(formatMessage('{n:F2} {n:N0}', { n: Number.NaN }), 'NaN NaN', 'F and N fall back to the plain text');
   assert.equal(
-    formatMessage('{big} {big:D25} {big:N0}', { big: 12345678901234567890n }),
-    '12345678901234567890 0000012345678901234567890 12,345,678,901,234,567,890',
+    formatMessage('{big} {big:D25} {big:N0} {big:X}', { big: 1234567890123456789n }),
+    '1234567890123456789 0000001234567890123456789 1,234,567,890,123,456,789 112210F47DE98115',
   );
+  // 超出 64 位的 bigint 与超出安全整数的 number 按值模型是浮点：不认 D，写成浮点的文本
+  assert.equal(
+    formatMessage('{big} {big:D} {unsafe} {unsafe:D}', { big: 12345678901234567890n, unsafe: 2 ** 60 }),
+    '1.2345678901234567E+19 1.2345678901234567E+19 1.152921504606847E+18 1.152921504606847E+18',
+  );
+  // 数组、对象、Map、Set 与语言自己的类型
+  assert.equal(
+    formatMessage('{a} {m} {s} {d} {nested}', {
+      a: [1, new Float64(2), undefined],
+      m: new Map<unknown, unknown>([
+        ['b', 1],
+        [2, 'x'],
+      ]),
+      s: new Set(['x']),
+      d: new Date(0),
+      nested: { z: { y: [] }, a: null },
+    }),
+    '[1,2,null] {"2":"x","b":1} ["x"] 1970-01-01T00:00:00.000Z {"a":null,"z":{"y":[]}}',
+  );
+  let deep: unknown = [];
+  for (let depth = 0; depth < 64; depth += 1) {
+    deep = [deep];
+  }
+  assert.equal(
+    formatMessage('{v}', { v: deep }),
+    `${'['.repeat(64)}null${']'.repeat(64)}`,
+    'containers deeper than 64 levels are null',
+  );
+  assert.equal(numberSymbols('FR-fr').group, String.fromCharCode(0x202f));
+  assert.equal(numberSymbols('it-IT'), numberSymbols());
+  assert.equal(formatValue(1234.5, 'N1', numberSymbols('de-DE')), '1.234,5');
   assert.equal(describe('orders.line.invalid', { z: -0, a: 1e-7 }), 'orders.line.invalid (a=1E-07, z=-0)');
 });
 

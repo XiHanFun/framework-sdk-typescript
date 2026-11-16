@@ -1,5 +1,7 @@
 import { ErrorCode } from './error-code.ts';
 import { FrameworkError } from './framework.ts';
+import { Float64, isIntegerNumber, isPlainObject, JsonMembers, maxInt64, minInt64 } from './json.ts';
+import { floatText, quoteJsonString } from './json-writer.ts';
 
 /**
  * 模板参数：占位符名到值；位置参数的键是 `"0"`、`"1"`…
@@ -117,11 +119,14 @@ export function placeholders(template: string): string[] {
  *
  * @remarks
  * 规则见 RFC-0010「模板」：`{name}` 取命名参数，`{0}` 取位置参数（见 {@link positional}），`{{`、`}}` 是转义的花括号；
- * 值为 `null` 写空串，不算缺值，`undefined` 算缺值。占位符可带 `:format`：可移植的 `D`、`X` / `x`、`F`、`N`
- * 按不变文化解释（如 `{count:D3}` 得 `007`，`F` 与 `N` 正好一半时取偶），其他说明符按无格式输出
+ * 值为 `null` 写空串，不算缺值，`undefined` 算缺值。值先归到值模型（见 {@link formatValue}），
+ * 占位符可带 `:format`：只认 `D`、`X` / `x`、`F`、`N` 加至多两位精度（如 `{count:D3}` 得 `007`，`F` 与 `N` 正好一半时取偶），
+ * 其余说明符一律按无格式写出
+ *
+ * @param locale - 区域名，只决定小数点与分组符（见 {@link numberSymbols}）；缺省按不变文化
  */
-export function formatMessage(template: string, args?: MessageArguments): string {
-  return render(template, args, false) as string;
+export function formatMessage(template: string, args?: MessageArguments, locale?: string): string {
+  return render(template, args, false, numberSymbols(locale)) as string;
 }
 
 /**
@@ -129,12 +134,19 @@ export function formatMessage(template: string, args?: MessageArguments): string
  *
  * @remarks
  * 语言目录按它解析（RFC-0010「找不到键或占位符缺值即失败」），失败时调用方退回 {@link describe}
+ *
+ * @param locale - 区域名，只决定小数点与分组符；缺省按不变文化
  */
-export function tryFormatMessage(template: string, args?: MessageArguments): string | undefined {
-  return render(template, args, true);
+export function tryFormatMessage(template: string, args?: MessageArguments, locale?: string): string | undefined {
+  return render(template, args, true, numberSymbols(locale));
 }
 
-function render(template: string, args: MessageArguments | undefined, strict: boolean): string | undefined {
+function render(
+  template: string,
+  args: MessageArguments | undefined,
+  strict: boolean,
+  symbols: NumberSymbols,
+): string | undefined {
   let text = '';
   for (const segment of parse(template)) {
     if (segment.literal !== undefined) {
@@ -149,52 +161,242 @@ function render(template: string, args: MessageArguments | undefined, strict: bo
       text += segment.format === undefined ? `{${segment.name}}` : `{${segment.name}:${segment.format}}`;
       continue;
     }
-    text += (segment.format === undefined ? undefined : formatNumber(value, segment.format)) ?? display(value);
+    text += formatValue(value, segment.format, symbols);
   }
   return text;
 }
 
-/** 可移植的格式说明符（RFC-0010「模板」）：D 整数补零、X / x 十六进制、F 定点、N 千分位 */
-const numberFormatPattern = /^([DdFfNnXx])([0-9]{0,2})$/;
+/**
+ * 区域的数字符号：小数点与分组符（RFC-0010「模板」，ADR-0236）
+ */
+export interface NumberSymbols {
+  /** 小数点 */
+  readonly decimal: string;
+  /** 分组符 */
+  readonly group: string;
+}
+
+/** 不变文化的符号，也是表外区域的符号 */
+const invariantSymbols: NumberSymbols = Object.freeze({ decimal: '.', group: ',' });
+
+/** 规范里的固定表（.NET 10 的 ICU 实测）；en-US、zh-CN、zh-TW、ja-JP、ko-KR 与不变文化相同，不必列出 */
+const localeSymbols: ReadonlyMap<string, NumberSymbols> = new Map([
+  ['de-de', Object.freeze({ decimal: ',', group: '.' })],
+  ['es-es', Object.freeze({ decimal: ',', group: '.' })],
+  ['pt-br', Object.freeze({ decimal: ',', group: '.' })],
+  // 窄不换行空格 U+202F
+  ['fr-fr', Object.freeze({ decimal: ',', group: String.fromCharCode(0x202f) })],
+  // 不换行空格 U+00A0
+  ['ru-ru', Object.freeze({ decimal: ',', group: String.fromCharCode(0xa0) })],
+]);
 
 /**
- * 按可移植的格式说明符（不变文化）格式化数值；不支持的格式或值返回 `undefined`，调用方按无格式输出
+ * 返回区域的数字符号
+ *
+ * @remarks
+ * 区域名不区分大小写；de-DE、es-ES、pt-BR 是 `,` 与 `.`，fr-FR 是 `,` 与 U+202F，ru-RU 是 `,` 与 U+00A0，
+ * 其余区域与不给区域都按不变文化（`.` 与 `,`）。负号、`NaN` 与 `Infinity` 不随区域变化
  */
-function formatNumber(value: unknown, format: string): string | undefined {
-  const match = numberFormatPattern.exec(format);
-  if (match === null || (typeof value !== 'number' && typeof value !== 'bigint')) {
+export function numberSymbols(locale?: string): NumberSymbols {
+  return (locale === undefined ? undefined : localeSymbols.get(locale.toLowerCase())) ?? invariantSymbols;
+}
+
+/** 可移植的格式说明符（RFC-0010「模板」）：字母后至多两位精度，可有前导零 */
+const specifierPattern = /^([DdFfNnXx])([0-9]{0,2})$/;
+
+/** 解析后的说明符：D、F、N 不区分大小写，X 与 x 定十六进制的大小写 */
+interface Specifier {
+  readonly letter: 'D' | 'F' | 'N' | 'X' | 'x';
+  readonly precision: number | undefined;
+}
+
+function parseSpecifier(format: string | undefined): Specifier | undefined {
+  const match = format === undefined ? null : specifierPattern.exec(format);
+  if (match === null) {
     return undefined;
   }
-  const specifier = (match[1] ?? '').toUpperCase();
-  const precision = match[2] === '' || match[2] === undefined ? undefined : Number(match[2]);
-  const integral = typeof value === 'bigint' || Number.isInteger(value);
-  switch (specifier) {
+  const raw = match[1] ?? '';
+  const letter = raw === 'x' ? 'x' : (raw.toUpperCase() as Specifier['letter']);
+  return { letter, precision: match[2] === '' || match[2] === undefined ? undefined : Number(match[2]) };
+}
+
+/** 值模型里的值（RFC-0010「模板」）：语言自己的类型已经换成文本 */
+type ModelValue =
+  | { readonly kind: 'null' }
+  | { readonly kind: 'boolean'; readonly value: boolean }
+  | { readonly kind: 'string'; readonly value: string }
+  | { readonly kind: 'integer'; readonly value: bigint }
+  | { readonly kind: 'float'; readonly value: number }
+  | { readonly kind: 'array'; readonly items: readonly unknown[] }
+  | { readonly kind: 'object'; readonly members: readonly (readonly [string, unknown])[] };
+
+const nullValue: ModelValue = Object.freeze({ kind: 'null' });
+
+/**
+ * 把 JavaScript 的值归到值模型（RFC-0010「模板」，ADR-0236）
+ *
+ * @remarks
+ * - `null` 与 `undefined` 是空；安全整数的 `number`（负零除外）与 64 位范围内的 `bigint` 是整数，
+ *   其余 `number`、超出 64 位的 `bigint` 与 {@link Float64} 是浮点。
+ * - 数组、类型化数组、`Set` 与其他可迭代对象是数组；普通对象、{@link JsonMembers} 与 `Map` 是对象，`Map` 的键按文本形式写成名字。
+ * - `Date` 写 `toISOString()`（无效日期写 `Invalid Date`），其余（类实例、symbol、函数）写 `String(value)`
+ */
+function modelOf(value: unknown): ModelValue {
+  switch (typeof value) {
+    case 'undefined':
+      return nullValue;
+    case 'boolean':
+      return { kind: 'boolean', value };
+    case 'string':
+      return { kind: 'string', value };
+    case 'number':
+      return isIntegerNumber(value) ? { kind: 'integer', value: BigInt(value) } : { kind: 'float', value };
+    case 'bigint':
+      return value >= minInt64 && value <= maxInt64
+        ? { kind: 'integer', value }
+        : { kind: 'float', value: Number(value) };
+    case 'object':
+      break;
+    default:
+      return { kind: 'string', value: String(value) };
+  }
+  if (value === null) {
+    return nullValue;
+  }
+  if (value instanceof Float64) {
+    return { kind: 'float', value: value.value };
+  }
+  if (value instanceof JsonMembers) {
+    return { kind: 'object', members: value.entries };
+  }
+  if (Array.isArray(value)) {
+    return { kind: 'array', items: value };
+  }
+  if (isPlainObject(value)) {
+    return { kind: 'object', members: Object.entries(value) };
+  }
+  if (value instanceof Map) {
+    return {
+      kind: 'object',
+      members: [...value].map(([name, member]: [unknown, unknown]) => [
+        typeof name === 'string' ? name : formatValue(name, undefined, invariantSymbols),
+        member,
+      ]),
+    };
+  }
+  if (value instanceof Date) {
+    return { kind: 'string', value: Number.isNaN(value.getTime()) ? String(value) : value.toISOString() };
+  }
+  if (ArrayBuffer.isView(value) && !(value instanceof DataView)) {
+    return { kind: 'array', items: Array.from(value as unknown as ArrayLike<unknown>) };
+  }
+  if (typeof (value as { [Symbol.iterator]?: unknown })[Symbol.iterator] === 'function') {
+    return { kind: 'array', items: [...(value as Iterable<unknown>)] };
+  }
+  return { kind: 'string', value: String(value) };
+}
+
+/**
+ * 把一个值写成模板里的文本（RFC-0010「模板」与「值的文本形式」）
+ *
+ * @remarks
+ * 值先归到值模型：空写空串，布尔写 `true` / `false`，字符串原样，整数十进制，浮点按 {@link floatText}；
+ * 数组与对象写成紧凑的 JSON（对象成员按名字的 UTF-16 码元序，数字不随区域变化，超过 64 层的容器写 `null`）。
+ * 说明符：`D` 与 `X` 只用于整数，`X` 只用于非负整数，`F` 与 `N` 用于整数与浮点，不适用时按无格式写出。
+ * 区域的小数点用在无格式的浮点与 `F`、`N` 上，分组符只用在 `N` 上
+ *
+ * @param format - 占位符的说明符，`:` 之后的部分；没有时为 `undefined`
+ * @param symbols - 数字符号，见 {@link numberSymbols}
+ */
+export function formatValue(value: unknown, format: string | undefined, symbols: NumberSymbols): string {
+  const model = modelOf(value);
+  switch (model.kind) {
+    case 'null':
+      return '';
+    case 'boolean':
+      return model.value ? 'true' : 'false';
+    case 'string':
+      return model.value;
+    case 'integer':
+      return localize(formatInteger(model.value, parseSpecifier(format)), symbols);
+    case 'float':
+      return localize(formatFloat(model.value, parseSpecifier(format)), symbols);
+    default:
+      return jsonText(model, 1);
+  }
+}
+
+function formatInteger(value: bigint, specifier: Specifier | undefined): string {
+  switch (specifier?.letter) {
     case 'D': {
-      if (!integral) {
-        return undefined;
-      }
-      const negative = value < 0;
-      const digits = (negative ? -BigInt(value) : BigInt(value)).toString().padStart(precision ?? 1, '0');
-      return negative ? `-${digits}` : digits;
+      const digits = (value < 0n ? -value : value).toString().padStart(specifier.precision ?? 1, '0');
+      return value < 0n ? `-${digits}` : digits;
     }
-    case 'X': {
-      // 负数的十六进制在 .NET 里是补码表示，与宽度有关；这里不猜，退回普通文本
-      if (!integral || value < 0) {
-        return undefined;
+    case 'X':
+    case 'x': {
+      // 负数没有可移植的十六进制写法（.NET 按类型宽度写补码），按无格式写出
+      if (value < 0n) {
+        return value.toString();
       }
-      const digits = BigInt(value)
-        .toString(16)
-        .padStart(precision ?? 1, '0');
-      return match[1] === 'X' ? digits.toUpperCase() : digits;
+      const digits = value.toString(16).padStart(specifier.precision ?? 1, '0');
+      return specifier.letter === 'X' ? digits.toUpperCase() : digits;
     }
     case 'F':
     case 'N':
-      if (typeof value === 'number' && !Number.isFinite(value)) {
-        return undefined;
-      }
-      return formatFixed(value, precision ?? 2, specifier === 'N');
+      return formatFixed(value, specifier.precision ?? 2, specifier.letter === 'N');
     default:
-      return undefined;
+      return value.toString();
+  }
+}
+
+function formatFloat(value: number, specifier: Specifier | undefined): string {
+  const fixed = specifier?.letter === 'F' || specifier?.letter === 'N';
+  // 无穷与非数写 F、N 时与无格式相同；D 与 X 不用于浮点
+  return fixed && Number.isFinite(value)
+    ? formatFixed(value, specifier.precision ?? 2, specifier.letter === 'N')
+    : floatText(value);
+}
+
+/** 不变文化的文本换成区域的符号：`.` 是小数点，`,` 是分组符，两者同时替换 */
+function localize(text: string, symbols: NumberSymbols): string {
+  if (symbols === invariantSymbols || (symbols.decimal === '.' && symbols.group === ',')) {
+    return text;
+  }
+  let localized = '';
+  for (const char of text) {
+    localized += char === '.' ? symbols.decimal : char === ',' ? symbols.group : char;
+  }
+  return localized;
+}
+
+/** 数组与对象写成 JSON 时的层数上限：再深的容器写 `null` */
+const maxTextDepth = 64;
+
+/** 值在数组与对象里的 JSON 文本；`depth` 是这个值若是容器时所在的层数，最外层为 1 */
+function jsonText(model: ModelValue, depth: number): string {
+  switch (model.kind) {
+    case 'null':
+      return 'null';
+    case 'boolean':
+      return model.value ? 'true' : 'false';
+    case 'string':
+      return quoteJsonString(model.value);
+    case 'integer':
+      return model.value.toString();
+    case 'float':
+      return floatText(model.value);
+    case 'array':
+      return depth > maxTextDepth
+        ? 'null'
+        : `[${model.items.map((item) => jsonText(modelOf(item), depth + 1)).join(',')}]`;
+    case 'object': {
+      if (depth > maxTextDepth) {
+        return 'null';
+      }
+      // Array.prototype.sort 是稳定排序：同名成员保持原顺序；字符串的 < 按 UTF-16 码元比较
+      const members = [...model.members].sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
+      return `{${members.map(([name, member]) => `${quoteJsonString(name)}:${jsonText(modelOf(member), depth + 1)}`).join(',')}}`;
+    }
   }
 }
 
@@ -251,65 +453,6 @@ function exactDecimal(value: number | bigint): { numerator: bigint; scale: numbe
 }
 
 /**
- * 把参数值转成文本（RFC-0010「值的文本形式」）
- *
- * @remarks
- * 字符串原样；数值见 {@link formatFloat}，bigint 写十进制；布尔写 `true` / `false`；`null` 写空串。
- * 规范不作规定的数组与对象按 JSON
- */
-function display(value: unknown): string {
-  if (typeof value === 'string') {
-    return value;
-  }
-  if (value === null) {
-    return '';
-  }
-  if (typeof value === 'number') {
-    return formatFloat(value);
-  }
-  if (value !== null && typeof value === 'object') {
-    try {
-      const json = JSON.stringify(value);
-      if (json !== undefined) {
-        return json;
-      }
-    } catch {
-      // 循环引用或 bigint 无法编码时退回 String，描述文本只给人看
-    }
-  }
-  return String(value);
-}
-
-/**
- * 数值的文本形式（RFC-0010「值的文本形式」，照 .NET 10 的实测）
- *
- * @remarks
- * 1e-4 ≤ |x| < 1e17 或 x 为零时写最短往返的十进制、不用指数，整数值不带小数点；范围外写最短往返的有效数字加
- * `E`、总写的符号与至少两位的指数（`1E+17`、`9.9E-05`、`5E-324`）；负零写 `-0`，非数与无穷写 `NaN`、`Infinity`、`-Infinity`。
- * JavaScript 的 `String` 要到 1e21 与 1e-7 才换指数、负零写 `0`，所以另行处理
- */
-function formatFloat(value: number): string {
-  if (Number.isNaN(value)) {
-    return 'NaN';
-  }
-  if (!Number.isFinite(value)) {
-    return value > 0 ? 'Infinity' : '-Infinity';
-  }
-  if (value === 0) {
-    return Object.is(value, -0) ? '-0' : '0';
-  }
-  const magnitude = Math.abs(value);
-  if (magnitude >= 1e-4 && magnitude < 1e17) {
-    // 这个范围里 String 正是不用指数的最短往返形式
-    return String(value);
-  }
-  // toExponential 不带参数时给出最短往返的有效数字，如 1.2345678901234568e+17
-  const [digits = '', exponent = '0'] = value.toExponential().split('e');
-  const sign = exponent.startsWith('-') ? '-' : '+';
-  return `${digits}E${sign}${exponent.replace(/^[+-]/, '').padStart(2, '0')}`;
-}
-
-/**
  * 把位置参数转成以 `"0"`、`"1"`… 为键的参数表
  */
 export function positional(...values: unknown[]): Record<string, unknown> {
@@ -324,7 +467,8 @@ export function positional(...values: unknown[]): Record<string, unknown> {
  * 在没有文案时描述一个消息：`键 (k=v, ...)`，参数按名字升序；没有参数时只有键
  *
  * @remarks
- * 值按 RFC-0010「值的文本形式」写；参数按名字的序数（UTF-16 码元）顺序排列（ADR-0235）；值为 `undefined` 的参数视为没有
+ * 值按 RFC-0010「值的文本形式」写，与区域无关，数组与对象写成紧凑的 JSON（见 {@link formatValue}）；
+ * 参数按名字的序数（UTF-16 码元）顺序排列（ADR-0235）；值为 `undefined` 的参数视为没有
  */
 export function describe(key: string, args?: MessageArguments): string {
   if (args === undefined) {
@@ -337,7 +481,7 @@ export function describe(key: string, args?: MessageArguments): string {
   if (names.length === 0) {
     return key;
   }
-  return `${key} (${names.map((name) => `${name}=${display(args[name])}`).join(', ')})`;
+  return `${key} (${names.map((name) => `${name}=${formatValue(args[name], undefined, invariantSymbols)}`).join(', ')})`;
 }
 
 /**
@@ -355,7 +499,7 @@ export interface MessageResolver {
  *
  * @remarks
  * 区域名不区分大小写（RFC-0010）；请求的区域没有该键时回退到 `en-US`。
- * 模板按 {@link tryFormatMessage} 解析，占位符缺值视为解析失败
+ * 模板按 {@link tryFormatMessage} 解析，数字符号取命中的区域（回退时是 `en-US`），占位符缺值视为解析失败
  */
 export class MessageCatalog implements MessageResolver {
   /** 小写区域名 → 消息键 → 模板 */
@@ -408,8 +552,12 @@ export class MessageCatalog implements MessageResolver {
    * 解析消息键；请求的区域没有该键时回退到 `en-US`
    */
   resolve(key: string, locale: string, args: MessageArguments | undefined): string | undefined {
-    const template = this.find(locale, key) ?? this.find(fallbackLocale, key);
-    return template === undefined ? undefined : tryFormatMessage(template, args);
+    const template = this.find(locale, key);
+    if (template !== undefined) {
+      return tryFormatMessage(template, args, locale);
+    }
+    const fallback = this.find(fallbackLocale, key);
+    return fallback === undefined ? undefined : tryFormatMessage(fallback, args, fallbackLocale);
   }
 
   /**
