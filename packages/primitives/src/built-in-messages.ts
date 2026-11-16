@@ -12,8 +12,8 @@ export const PrimitivesMessageKey = Object.freeze({
  * SDK 自带的默认英文模板：原语层与内核里 SDK 会用到的消息键
  *
  * @remarks
- * 与 spec/conformance/vectors/primitives/kernel-messages.json 逐字相同（RFC-0011「错误码」，模板以 .NET 的 en-US 为准）；
- * 清单读取的 `kernel.manifest.*` 与 `primitives.manifest.*` 不在向量里，取自 .NET 内核与原语层的语言文件（RFC-0002 解析规则 2）
+ * 与 spec/conformance/vectors/primitives/kernel-messages.json 逐字相同（RFC-0011「错误码」，模板以 .NET 的 en-US 为准），
+ * 含清单读取的 `kernel.manifest.*` 与 `primitives.manifest.*`（RFC-0002 解析规则 2，ADR-0236）
  */
 export const builtInTemplates: Readonly<Record<string, string>> = Object.freeze({
   'primitives.result.uninitialized': 'The result is uninitialized: a default value is not a valid result.',

@@ -38,6 +38,7 @@ import {
   ErrorCode,
   type ErrorInfo,
   FrameworkError,
+  formatMessage,
   JsonMembers,
   type JsonNode,
   PipelineStage,
@@ -444,6 +445,13 @@ function failed<T>(result: Result<T>): ErrorInfo {
   return result.error;
 }
 
+/** kernel-messages.json 里清单读取的错误：键 → 码与 en-US 模板 */
+const kernelTemplates = new Map(
+  vector<{ messages: { code: string; key: string; template: string }[] }>('kernel-messages.json').messages.map(
+    (message) => [message.key, message] as const,
+  ),
+);
+
 test('清单的读取与写出遵循 manifests.json', () => {
   // 向量里的清单是 JSON 值，成员顺序就是文本顺序：按保留文档顺序的树读，再写成紧凑的文本交给读取
   const url = new URL('../../../spec/conformance/vectors/manifest/manifests.json', import.meta.url);
@@ -474,6 +482,10 @@ test('清单的读取与写出遵循 manifests.json', () => {
     assert.equal(result.error.code, expected.code, name);
     assert.equal(result.error.messageKey, expected.messageKey, name);
     assert.deepEqual({ ...result.error.details }, expected.arguments, name);
+    // 消息是 kernel-messages.json 的英文模板填入参数，与 .NET 相同（ADR-0236）
+    const template = kernelTemplates.get(expected.messageKey);
+    assert.equal(template?.code, expected.code, `${expected.messageKey} is a kernel message`);
+    assert.equal(result.error.message, formatMessage(template?.template ?? '', expected.arguments), name);
   }
 });
 
