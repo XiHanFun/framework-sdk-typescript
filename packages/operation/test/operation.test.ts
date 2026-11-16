@@ -10,6 +10,7 @@ import {
   findOperationRequest,
   findOperationResponsePayload,
   isOperationId,
+  JsonPath,
   type OperationContract,
   OperationErrorCode,
   OperationInvoker,
@@ -125,7 +126,7 @@ test('调用经过完整管道并编码响应', async () => {
 test('载荷不合法的细节：消息键、id 与只写结论的 reason', async () => {
   const invoker = newInvoker();
   const cases: [string | Uint8Array, string][] = [
-    ['null', 'the payload is null'],
+    ['null', '$'],
     ['{"secret":', '$'],
     ['{"quantity":"2"}', '$.quantity'],
     [new Uint8Array([0x7b, 0xff, 0x7d]), '$'],
@@ -468,4 +469,83 @@ test('截止时间已过才开始的调用在第一个中间件之前结束', as
     ).outcome.ok,
   );
   assert.equal(entered, 1);
+});
+
+/** 向量的整数字典：成员值都是整数 */
+function decodeCounts(value: JsonValue): Record<string, number> {
+  if (!isPlainObject(value)) {
+    throw new RequestDecodeError(JsonPath.root);
+  }
+  const counts: Record<string, number> = {};
+  for (const [name, count] of Object.entries(value)) {
+    if (typeof count !== 'number' || !Number.isInteger(count)) {
+      throw new RequestDecodeError(JsonPath.member(JsonPath.root, name));
+    }
+    counts[name] = count;
+  }
+  return counts;
+}
+
+/** 向量的订单：lines 是数组，每项是对象，quantity 是整数；缺少成员不算类型不符（规范不作规定） */
+function decodeOrder(value: JsonValue): { readonly lines: readonly { readonly quantity: number }[] } {
+  if (!isPlainObject(value)) {
+    throw new RequestDecodeError(JsonPath.root);
+  }
+  const linesPath = JsonPath.member(JsonPath.root, 'lines');
+  const lines = value.lines ?? [];
+  if (!Array.isArray(lines)) {
+    throw new RequestDecodeError(linesPath);
+  }
+  return {
+    lines: lines.map((line, index) => {
+      const linePath = JsonPath.index(linesPath, index);
+      if (!isPlainObject(line)) {
+        throw new RequestDecodeError(linePath);
+      }
+      const quantity = line.quantity ?? 0;
+      if (typeof quantity !== 'number' || !Number.isInteger(quantity)) {
+        throw new RequestDecodeError(JsonPath.member(linePath, 'quantity'));
+      }
+      return { quantity };
+    }),
+  };
+}
+
+test('载荷不合法的 reason 遵循 payload-reasons.json', async () => {
+  const url = new URL('../../../spec/conformance/vectors/operations/payload-reasons.json', import.meta.url);
+  const vectors = JSON.parse(readFileSync(url, 'utf8')) as {
+    cases: { name: string; request: 'counts' | 'order'; payload: string; reason: string }[];
+    syntaxErrors: { request: 'counts' | 'order'; payload: string }[];
+  };
+  const registry = new OperationRegistry();
+  const contracts = {
+    counts: defineContract<Record<string, number>, string>({ id: 'counts.update', expose: [] }),
+    order: defineContract<{ readonly lines: readonly { readonly quantity: number }[] }, string>({
+      id: 'orders.place',
+      expose: [],
+    }),
+  };
+  registry.add({ contract: contracts.counts, decode: decodeCounts, handler: async () => Result.ok('ok') });
+  registry.add({ contract: contracts.order, decode: decodeOrder, handler: async () => Result.ok('ok') });
+  const invoker = new OperationInvoker(registry);
+  const reasonOf = async (request: 'counts' | 'order', payload: string) => {
+    const response = await invoker.invoke(InvocationContext.create(), { id: contracts[request].id, payload });
+    assert.ok(!response.outcome.ok, payload);
+    assert.equal(response.outcome.error.code, OperationErrorCode.InvalidPayload);
+    assert.equal(response.outcome.error.messageKey, OperationMessageKey.InvalidPayload);
+    return response.outcome.error.details?.reason;
+  };
+  for (const c of vectors.cases) {
+    assert.equal(await reasonOf(c.request, c.payload), c.reason, c.name);
+  }
+  for (const c of vectors.syntaxErrors) {
+    const reason = await reasonOf(c.request, c.payload);
+    assert.ok(typeof reason === 'string' && reason.startsWith('$'), `${c.payload} gives ${String(reason)}`);
+  }
+  // 合法的载荷照常执行
+  const ok = await invoker.invoke(InvocationContext.create(), {
+    id: 'orders.place',
+    payload: '{"lines":[{"quantity":2}]}',
+  });
+  assert.equal(ok.payload, '"ok"');
 });

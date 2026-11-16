@@ -51,8 +51,8 @@ export type OperationHandler<Req, Res> = (context: InvocationContext, request: R
  *
  * @remarks
  * 载荷与请求类型不符时抛出。`KERNEL_VALIDATION_001` 细节里的 `reason` 只写出错位置的 JSON 路径（RFC-0011 规则 2）：
- * 抛出 {@link RequestDecodeError}（或任何带 `$` 开头的字符串 `path` 成员的错误）时取它的路径，其他异常写 `$`。
- * 可以直接用 Schema 库的解析函数
+ * 抛出 {@link RequestDecodeError}（或任何带 `$` 开头的字符串 `path` 成员的错误）时取它的路径，路径用 {@link JsonPath} 拼；
+ * 其他异常写 `$`；可以直接用 Schema 库的解析函数
  */
 export type RequestDecoder<Req> = (value: JsonValue) => Req;
 
@@ -256,8 +256,8 @@ const rootPath = '$';
  * 解码载荷：空等价于 `{}`；非 UTF-8、非 JSON、`null` 或解码器拒绝都是 `KERNEL_VALIDATION_001`
  *
  * @remarks
- * `reason` 只写出错位置的 JSON 路径（RFC-0011 规则 2，与 .NET 一致）：不带解析器的报错原文，它会引用载荷片段或类型名；
- * 字面量 `null` 写 `the payload is null`，与 .NET 相同
+ * `reason` 只写出错位置的 JSON 路径（RFC-0011 规则 2，ADR-0235）：载荷是 `null`、不是 UTF-8 或语法不对时写 `$`，
+ * 不带解析器的报错原文，它会引用载荷片段或类型名；值的类型不符时取解码器报告的路径（见 {@link JsonPath}）
  */
 function decodePayload(
   id: string,
@@ -280,7 +280,7 @@ function decodePayload(
     return invalidPayload(id, rootPath);
   }
   if (value === null) {
-    return invalidPayload(id, 'the payload is null');
+    return invalidPayload(id, rootPath);
   }
   let request: unknown;
   try {
