@@ -4,12 +4,15 @@ import { test } from 'node:test';
 
 import { InvocationContext, InvocationMessageKey } from '@xihan-framework/invocation';
 import {
+  BuiltInStep,
   defineContract,
   Expose,
+  findDecodedRequest,
   findOperation,
   findOperationRequest,
   findOperationResponsePayload,
   isOperationId,
+  KernelOwner,
   type OperationContract,
   OperationErrorCode,
   OperationInvoker,
@@ -441,15 +444,90 @@ test('抛出的异常翻译为失败：未处理的是 KERNEL_UNEXPECTED_001，�
   assert.equal(decodeFailure.outcome.ok ? undefined : decodeFailure.outcome.error.details?.reason, '$.mode');
 });
 
-test('截止时间已过才开始的调用在第一个中间件之前结束', async () => {
-  let entered = 0;
-  const builder = new PipelineBuilder().useAt(
-    middleware('Count', (context, next) => {
-      entered += 1;
-      return next(context);
-    }),
-    PipelineStage.Ingress,
+test('内置步骤的位置：只接住排在 Observe 内置步骤之后抛出的异常', async () => {
+  const registry = new OperationRegistry();
+  const contract = defineContract<Record<string, never>, string>({ id: 'faults.raise', expose: [] });
+  registry.add({ contract, request: RequestShape.object({}), handler: async () => Result.ok('ok') });
+  const throwing = (owner: string, stage: PipelineStage, placement: Placement) =>
+    new OperationInvoker(
+      registry,
+      new PipelineBuilder().useAt(
+        middleware('Broken', async () => {
+          throw new RangeError('boom');
+        }),
+        stage,
+        placement,
+        owner,
+      ),
+    );
+  // Ingress 阶段，与 Observe 阶段 Beginning 上归属排在 xihan.kernel.core 之前的：异常原样交给调用方
+  for (const invoker of [
+    throwing('app', PipelineStage.Ingress, Placement.End),
+    throwing('app', PipelineStage.Observe, Placement.Beginning),
+    throwing('xihan.a', PipelineStage.Observe, Placement.Beginning),
+  ]) {
+    await assert.rejects(invoker.invoke(InvocationContext.create(), { id: 'faults.raise' }), RangeError);
+    await assert.rejects(invoker.invokeTyped(InvocationContext.create(), contract, {}), RangeError);
+  }
+  // 排在它之后的：翻译成 KERNEL_UNEXPECTED_001
+  for (const invoker of [
+    throwing('zeta.plugins', PipelineStage.Observe, Placement.Beginning),
+    throwing('app', PipelineStage.Observe, Placement.End),
+    throwing('app', PipelineStage.Handle, Placement.End),
+  ]) {
+    const response = await invoker.invoke(InvocationContext.create(), { id: 'faults.raise' });
+    assert.equal(
+      response.outcome.ok ? undefined : response.outcome.error.messageKey,
+      'kernel.invocation.unhandled_exception',
+    );
+  }
+  assert.equal(KernelOwner, 'xihan.kernel.core');
+  assert.deepEqual(BuiltInStep, {
+    Observe: 'ObserveMiddleware',
+    Deadline: 'DeadlineMiddleware',
+    Validation: 'ValidationMiddleware',
+  });
+  // 调用方的构建器不变；内置步骤可以作为约束的目标
+  const seen: unknown[] = [];
+  const builder = new PipelineBuilder()
+    .useAt(
+      middleware('Inspect', (context, next) => {
+        seen.push(findDecodedRequest(context));
+        return next(context);
+      }),
+      PipelineStage.Validate,
+      Placement.Beginning,
+    )
+    .after('Inspect', BuiltInStep.Validation);
+  const invoker = newInvoker(builder);
+  assert.throws(() => builder.dump(), FrameworkError, 'the caller builder does not get the built-in steps');
+  await invoker.invoke(InvocationContext.create(), { id: 'orders.create', payload: '{"quantity":2}' });
+  await invoker.invokeTyped(InvocationContext.create(), createOrder, { quantity: 3 });
+  assert.deepEqual(seen, [{ quantity: 2 }, { quantity: 3 }]);
+  // 内置步骤同名的中间件是重复登记
+  throwsCode(
+    () =>
+      newInvoker(
+        new PipelineBuilder().useAt(
+          middleware(BuiltInStep.Deadline, (c, n) => n(c)),
+          PipelineStage.Handle,
+        ),
+      ),
+    PipelineErrorCode.Registration,
   );
+});
+
+test('截止时间在 Resilience 阶段的内置步骤上核对，进入时不核对取消', async () => {
+  const entered: string[] = [];
+  const counting = (name: string) =>
+    middleware(name, (context, next) => {
+      entered.push(name);
+      return next(context);
+    });
+  const builder = new PipelineBuilder()
+    .useAt(counting('Ingress'), PipelineStage.Ingress)
+    .useAt(counting('Observe'), PipelineStage.Observe)
+    .useAt(counting('Authenticate'), PipelineStage.Authenticate);
   const invoker = newInvoker(builder);
   const late = InvocationContext.create({ deadline: Date.now() - 1 });
   const response = await invoker.invoke(late, { id: 'orders.create', payload: '{"quantity":1}' });
@@ -460,19 +538,32 @@ test('截止时间已过才开始的调用在第一个中间件之前结束', as
   const typed = await invoker.invokeTyped(late, createOrder, { quantity: 1 });
   assert.ok(!typed.ok);
   assert.equal(typed.error.messageKey, InvocationMessageKey.DeadlineBeforeStart);
-  assert.equal(entered, 0, 'the pipeline does not run');
-  // 未登记的操作仍先报未登记
+  // Ingress 与 Observe 排在 Resilience 之前，照常执行；后面的阶段不执行
+  assert.deepEqual(entered, ['Ingress', 'Observe', 'Ingress', 'Observe']);
+  // 进管道前只核对未登记
   assert.equal(codeOf((await invoker.invoke(late, { id: 'orders.missing' })).outcome), OperationErrorCode.NotFound);
-  // 还有时间的调用照常进管道
-  assert.ok(
-    (
-      await invoker.invoke(InvocationContext.create({ timeout: 1000 }), {
-        id: 'orders.create',
-        payload: '{"quantity":1}',
-      })
-    ).outcome.ok,
+  // 截止时间先于解码：载荷不合法的调用在 Resilience 阶段就结束
+  const invalid = await invoker.invoke(late, { id: 'orders.create', payload: '{' });
+  assert.equal(
+    invalid.outcome.ok ? undefined : invalid.outcome.error.messageKey,
+    InvocationMessageKey.DeadlineBeforeStart,
   );
-  assert.equal(entered, 1);
+  // 还有时间的调用照常进管道
+  entered.length = 0;
+  const timely = await invoker.invoke(InvocationContext.create({ timeout: 1000 }), {
+    id: 'orders.create',
+    payload: '{"quantity":1}',
+  });
+  assert.ok(timely.outcome.ok);
+  assert.deepEqual(entered, ['Ingress', 'Observe', 'Authenticate']);
+  // 进入时不核对取消：已取消的调用照常执行，没有观察信号的处理器照常完成
+  const cancelled = new AbortController();
+  cancelled.abort();
+  const running = await invoker.invoke(InvocationContext.create({ signal: cancelled.signal }), {
+    id: 'orders.create',
+    payload: '{"quantity":1}',
+  });
+  assert.ok(running.outcome.ok);
 });
 
 /** 向量的三个请求类型（payload-reasons.json 的 requests） */

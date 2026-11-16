@@ -17,9 +17,12 @@ export {
   OperationMessageKey,
 } from './contract.ts';
 export {
+  BuiltInStep,
+  findDecodedRequest,
   findOperation,
   findOperationRequest,
   findOperationResponsePayload,
+  KernelOwner,
   OperationInvoker,
 } from './invoker.ts';
 export {
