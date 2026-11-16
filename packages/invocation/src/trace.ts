@@ -7,54 +7,43 @@ export interface TraceContext {
   /** Span ID（W3C 的 parent-id）：16 位小写十六进制，不全为零 */
   readonly spanId: string;
   /**
-   * trace-flags，0–255；没有时表示没有上游，这次调用是链路的根（RFC-0003 第 7 条）
+   * 采样位；没有时表示上下文没有标志（链路的根），写出时按已采样写 `01`（RFC-0003 第 7 条）
    *
    * @remarks
-   * 是否采样只看最低位，其余位原样保留、不解释
+   * 只看标志的最低位，其余位不进上下文
    */
-  readonly flags?: number | undefined;
+  readonly sampled?: boolean | undefined;
 }
 
-/** W3C traceparent：version-traceid-spanid-flags */
-const traceParentPattern = /^([0-9a-f]{2})-([0-9a-f]{32})-([0-9a-f]{16})-([0-9a-f]{2})$/;
+/** W3C traceparent 版本 00 的文法；其他版本（含 ff）、大写十六进制、多余的段都不合法（RFC-0003 第 7 条） */
+const traceParentPattern = /^00-([0-9a-f]{32})-([0-9a-f]{16})-([0-9a-f]{2})$/;
 const traceIdPattern = /^[0-9a-f]{32}$/;
 const spanIdPattern = /^[0-9a-f]{16}$/;
 const allZero = /^0+$/;
 
-/** 没有上游、又没有采样器时写出的标志：按已采样传下去，由下游的采样器决定（RFC-0003 第 7 条「写出」） */
-const rootFlags = 0x01;
-
 /**
- * 解析 W3C traceparent；不合法（格式不对、版本是 `ff`、ID 全为零）时为 `undefined`
+ * 解析 W3C traceparent；不合法（格式不对、ID 全为零）时为 `undefined`，调用方当作没有给出
  */
 export function parseTraceParent(traceParent: string): TraceContext | undefined {
   const match = traceParentPattern.exec(traceParent);
   if (match === null) {
     return undefined;
   }
-  const [, version, traceId = '', spanId = '', flags = ''] = match;
-  if (version === 'ff' || allZero.test(traceId) || allZero.test(spanId)) {
+  const [, traceId = '', spanId = '', flags = ''] = match;
+  if (allZero.test(traceId) || allZero.test(spanId)) {
     return undefined;
   }
-  return { traceId, spanId, flags: Number.parseInt(flags, 16) };
+  return { traceId, spanId, sampled: (Number.parseInt(flags, 16) & 0x01) === 0x01 };
 }
 
 /**
- * 格式化 W3C traceparent：`00-<trace-id>-<span-id>-<flags>`
+ * 写出 W3C traceparent：`00-<trace-id>-<span-id>-<00|01>`
  *
  * @remarks
- * 标志总是两位十六进制：没有标志（根调用）写 `01`，上游给的标志（含 `00`）原样写出
+ * 标志只写采样位：不采样写 `00`，采样与没有标志（根调用，没有采样器，按已采样传下去）写 `01`
  */
 export function formatTraceParent(trace: TraceContext): string {
-  const flags = (trace.flags ?? rootFlags).toString(16).padStart(2, '0');
-  return `00-${trace.traceId}-${trace.spanId}-${flags}`;
-}
-
-/**
- * 判断标志是否表示采样：只看最低位；没有标志按已采样
- */
-export function isSampled(flags: number | undefined): boolean {
-  return ((flags ?? rootFlags) & 0x01) === 0x01;
+  return `00-${trace.traceId}-${trace.spanId}-${trace.sampled === false ? '00' : '01'}`;
 }
 
 /**

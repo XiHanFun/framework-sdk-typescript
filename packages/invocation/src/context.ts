@@ -8,7 +8,7 @@ import {
   isBaggageValueAcceptable,
 } from '@xihan-framework/primitives';
 
-import { formatTraceParent, isSampled, isSpanId, isTraceId, newSpanId, newTraceId, parseTraceParent } from './trace.ts';
+import { formatTraceParent, isSpanId, isTraceId, newSpanId, newTraceId, parseTraceParent } from './trace.ts';
 
 /**
  * 内核登记的、与调用上下文有关的错误码
@@ -104,8 +104,8 @@ interface State {
   readonly deadline: number | undefined;
   readonly traceId: string;
   readonly spanId: string;
-  /** trace-flags；没有时这次调用是链路的根 */
-  readonly flags: number | undefined;
+  /** 采样位；没有时这次调用是链路的根 */
+  readonly sampled: boolean | undefined;
   readonly baggage: Readonly<Record<string, string>>;
   /** 对象袋：派生上下文共享同一个 */
   readonly items: Map<object, unknown>;
@@ -205,25 +205,20 @@ export class InvocationContext {
   }
 
   /**
-   * trace-flags；没有上游时为 `undefined`，这次调用是链路的根
+   * 是否采样
    *
    * @remarks
-   * 上游的标志原样保留，包括采样位以外的位
+   * 上游的采样位（标志的最低位）；没有上游的根调用没有采样器，按已采样传下去，为 `true`
    */
-  get traceFlags(): number | undefined {
-    return this.#state.flags;
-  }
-
-  /** 是否采样：只看标志的最低位；根调用按已采样传下去 */
   get sampled(): boolean {
-    return isSampled(this.#state.flags);
+    return this.#state.sampled ?? true;
   }
 
   /**
    * 写出的 W3C traceparent
    *
    * @remarks
-   * 标志总是两位十六进制：根调用写 `01`，上游给的 `00` 等标志原样写出（RFC-0003 第 7 条「写出」）
+   * 版本是 `00`，标志只写采样位：`00` 或 `01`，根调用写 `01`（RFC-0003 第 7 条「写出」）
    */
   get traceParent(): string {
     return formatTraceParent(this.#state);
@@ -364,9 +359,10 @@ function timerSignal(delay: number): AbortSignal | undefined {
  * 追踪的来源（RFC-0003 第 7 条）
  *
  * @remarks
- * 显式给出的追踪没给 `sampled` 按上游已采样处理；合法的 traceparent 连同标志原样取；都没有时生成 ID，标志为空，这次调用是根
+ * 显式给出的追踪没给 `sampled` 按上游已采样处理；合法的 traceparent 取它的 ID 与采样位；不合法的当作没给，
+ * 都没有时生成 ID，采样位为空，这次调用是根
  */
-function resolveTrace(options: InvocationContextOptions): Pick<State, 'traceId' | 'spanId' | 'flags'> {
+function resolveTrace(options: InvocationContextOptions): Pick<State, 'traceId' | 'spanId' | 'sampled'> {
   if (options.trace !== undefined) {
     const { traceId, spanId, sampled = true } = options.trace;
     if (!isTraceId(traceId)) {
@@ -375,12 +371,12 @@ function resolveTrace(options: InvocationContextOptions): Pick<State, 'traceId' 
     if (!isSpanId(spanId)) {
       throw invalid(`The span ID '${spanId}' must be 16 lowercase hexadecimal digits that are not all zero.`);
     }
-    return { traceId, spanId, flags: sampled ? 0x01 : 0x00 };
+    return { traceId, spanId, sampled };
   }
   const parsed = options.traceParent === undefined ? undefined : parseTraceParent(options.traceParent);
   return parsed === undefined
-    ? { traceId: newTraceId(), spanId: newSpanId(), flags: undefined }
-    : { traceId: parsed.traceId, spanId: parsed.spanId, flags: parsed.flags };
+    ? { traceId: newTraceId(), spanId: newSpanId(), sampled: undefined }
+    : { traceId: parsed.traceId, spanId: parsed.spanId, sampled: parsed.sampled };
 }
 
 /**

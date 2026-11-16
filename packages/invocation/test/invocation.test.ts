@@ -10,7 +10,6 @@ import {
   InvocationErrorCode,
   InvocationMessageKey,
   ItemKey,
-  isSampled,
   isSpanId,
   isTraceId,
   newSpanId,
@@ -72,8 +71,7 @@ test('新建时生成追踪、保留 Baggage', () => {
   assert.ok(context.deleteItem(key) && !context.deleteItem(key));
 
   const parsed = parseTraceParent(context.traceParent);
-  assert.deepEqual(parsed, { traceId: context.traceId, spanId: context.spanId, flags: 0x01 });
-  assert.equal(context.traceFlags, undefined, 'a context without an upstream is the root');
+  assert.deepEqual(parsed, { traceId: context.traceId, spanId: context.spanId, sampled: true });
   assert.ok(context.sampled && context.traceParent.endsWith('-01'), 'the root writes 01');
   assert.equal(derived.traceId, context.traceId);
   assert.equal(derived.signal, context.signal);
@@ -168,30 +166,45 @@ test('W3C traceparent 的解析', () => {
   assert.ok(isTraceId(ignored.traceId), 'an invalid traceparent is ignored');
   const explicit = InvocationContext.create({ trace: { traceId: newTraceId(), spanId: newSpanId(), sampled: false } });
   assert.equal(
-    formatTraceParent({ traceId: explicit.traceId, spanId: explicit.spanId, flags: explicit.traceFlags }),
+    formatTraceParent({ traceId: explicit.traceId, spanId: explicit.spanId, sampled: explicit.sampled }),
     explicit.traceParent,
   );
   assert.ok(explicit.traceParent.endsWith('-00'));
   // 只给追踪不给采样位的创建方按上游已采样处理
   const given = InvocationContext.create({ trace: { traceId: newTraceId(), spanId: newSpanId() } });
-  assert.equal(given.traceFlags, 0x01);
+  assert.ok(given.sampled && given.traceParent.endsWith('-01'));
 });
 
-test('trace-flags：只看最低位判断采样，其余位原样写出，根调用写 01', () => {
-  const upstream = '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331';
-  const flagged = InvocationContext.create({ traceParent: `${upstream}-03` });
-  assert.equal(flagged.traceFlags, 0x03);
-  assert.ok(flagged.sampled);
-  assert.equal(flagged.traceParent, `${upstream}-03`, 'the bits other than sampled are kept');
-  const unsampled = InvocationContext.create({ traceParent: `${upstream}-02` });
-  assert.ok(!unsampled.sampled);
-  assert.equal(unsampled.withBaggage(BaggageKey.Tenant, 't1').traceParent, `${upstream}-02`);
-  assert.equal(parseTraceParent(`ff-${upstream.slice(3)}-01`), undefined, 'version ff is invalid');
-  assert.equal(
-    formatTraceParent({ traceId: '0af7651916cd43dd8448eb211c80319c', spanId: 'b7ad6b7169203331' }),
-    `${upstream}-01`,
-  );
-  assert.ok(isSampled(undefined) && isSampled(0x01) && !isSampled(0x00) && !isSampled(0x02));
+test('traceparent 的解析与写出遵循向量：只认版本 00，标志只写采样位', () => {
+  const url = new URL('../../../spec/conformance/vectors/primitives/trace-context.json', import.meta.url);
+  const vectors = JSON.parse(readFileSync(url, 'utf8')) as {
+    parse: { valid: { text: string; traceId: string; spanId: string; sampled: boolean }[]; invalid: string[] };
+    format: { traceId: string; spanId: string; sampled: boolean | null; text: string }[];
+  };
+  for (const c of vectors.parse.valid) {
+    assert.deepEqual(parseTraceParent(c.text), { traceId: c.traceId, spanId: c.spanId, sampled: c.sampled }, c.text);
+    // 进上下文后只留采样位，写出 00 或 01
+    const context = InvocationContext.create({ traceParent: c.text });
+    assert.equal(context.traceId, c.traceId);
+    assert.equal(context.spanId, c.spanId);
+    assert.equal(context.traceParent, `00-${c.traceId}-${c.spanId}-${c.sampled ? '01' : '00'}`);
+  }
+  for (const text of vectors.parse.invalid) {
+    assert.equal(parseTraceParent(text), undefined, `${JSON.stringify(text)} must not parse`);
+    // 不合法的当作没有给出：生成新的追踪，作为根写出 01
+    const context = InvocationContext.create({ traceParent: text });
+    assert.ok(isTraceId(context.traceId) && !text.includes(context.traceId));
+    assert.ok(context.traceParent.endsWith('-01'));
+  }
+  for (const c of vectors.format) {
+    const trace =
+      c.sampled === null
+        ? { traceId: c.traceId, spanId: c.spanId }
+        : { traceId: c.traceId, spanId: c.spanId, sampled: c.sampled };
+    assert.equal(formatTraceParent(trace), c.text);
+  }
+  const root = InvocationContext.create();
+  assert.ok(root.sampled && root.traceParent.endsWith('-01'), 'the root writes 01');
 });
 
 test('已登记键的值不合约束时在构造与派生上下文时丢弃，幂等键除外', () => {
