@@ -65,19 +65,19 @@ const response = await invoker.invoke(context, { id: 'orders.create', payload: '
 const typed = await invoker.invokeTyped(context, createOrder, { quantity: 3 }); // Result<OrderCreated>
 ```
 
-`Result<T>`、`ErrorInfo`、`Maybe<T>` 的 JSON 编码与 .NET 参考实现一致（`{"ok":true,"value":…}` / `{"ok":false,"error":{…}}`，没有值的成功是 `{"ok":true}`），`JSON.stringify` 即得线上编码，`Result.fromJSON` / `Result.fromJSONMaybe` / `ErrorInfo.fromJSON` / `Maybe.fromJSON` 还原；线上编码、模板格式化、内核错误、生命周期迁移表、管道阶段顺序、错误码、Baggage 键与值、能力依赖的文法都由 `spec/conformance/vectors` 验证。
+`Result<T>`、`ErrorInfo`、`Maybe<T>` 的 JSON 编码与 .NET 参考实现一致（`{"ok":true,"value":…}` / `{"ok":false,"error":{…}}`，没有值的成功是 `{"ok":true}`），`JSON.stringify` 即得线上编码，`Result.parse` / `Result.parseMaybe` / `ErrorInfo.parse` 从文本还原（`fromJSON` 系列收已解析的值）；线上编码、模板格式化、内核错误、生命周期迁移表、管道阶段顺序、错误码、Baggage 键与值、能力依赖的文法都由 `spec/conformance/vectors` 验证。
 
 ## 与宿主共用的线上细节
 
-以下行为按规范（ADR-0233）定死，各语言 SDK 与 .NET 宿主相同：
+以下行为按规范（ADR-0233、ADR-0235）定死，各语言 SDK 与 .NET 宿主相同：
 
-- **Result 与 Error 的读写**（RFC-0001「Result」）：无值成功只写 `{"ok":true}`，读取时带了 `value` 即拒绝，`{}` 与 `null` 也一样；有值成功的 `value` 必填、不能是 `null`（值类型是 Maybe 时用 `Result.fromJSONMaybe`，`null` 即无值）。Error 的 `message` 必填且非空，`messageKey`、`details`、`inner` 写了就必须合法，写成 `null` 不合法；未知成员忽略。
-- **模板**（RFC-0010「模板」）：`{{` / `}}` 转义；参数值为 `null` 写空串、不算缺值，`undefined` 算缺值。可移植的格式说明符是 `D`、`X` / `x`、`F`、`N`，按不变文化解释，`F` 与 `N` 按值的精确十进制展开舍入、正好一半时取偶（0.125 写 `F2` 得 `0.12`，2.675 得 `2.67`），其他说明符按无格式输出。消息键最长 128 个字符。
+- **Result 与 Error 的读写**（RFC-0001「Result」）：无值成功只写 `{"ok":true}`，读取时带了 `value` 即拒绝，`{}` 与 `null` 也一样；有值成功的 `value` 必填、不能是 `null`（值类型是 Maybe 时用 `Result.fromJSONMaybe`，`null` 即无值）。Error 的 `message` 必填且非空，`messageKey`、`details`、`inner` 写了就必须合法，写成 `null` 不合法；同一层的重复成员名不合法（`JSON.parse` 会悄悄取最后一个，所以从文本读取用 `parse` 系列）；未知成员忽略。
+- **模板**（RFC-0010「模板」）：`{{` / `}}` 转义；参数值为 `null` 写空串、不算缺值，`undefined` 算缺值。可移植的格式说明符是 `D`、`X` / `x`、`F`、`N`（`D`、`F`、`N` 不区分大小写，`X` / `x` 分别写大写、小写十六进制，精度 0–99），按不变文化解释，`F` 与 `N` 按值的精确十进制展开舍入、正好一半时取偶（0.125 写 `F2` 得 `0.12`，2.675 得 `2.67`），写出全部整数位，负数舍入成零与负零都保留负号，其他说明符按无格式输出。数值在 1e-4 ≤ |x| < 1e17 内写最短往返的十进制，范围外写 `1E+17`、`9.9E-05`、`5E-324` 这种形式，负零写 `-0`，另有 `NaN`、`Infinity`、`-Infinity`。`Describe` 的参数按名字的序数顺序排列。消息键最长 128 个字符。
 - **内核错误**（RFC-0011「错误码」）：码、消息键、参数与 en-US 模板照 `kernel-messages.json`，SDK 自带这组英文模板（`builtInMessages`），`ErrorInfo.message` 在进程默认目录解析不出时用它；宿主收到错误后按键用自己的目录翻译。配置期的重复登记与登记表已满以 `FrameworkError` 抛出，同样带 `messageKey` 与 `details`。
-- **调用器**（RFC-0011 规则 2、5、9）：载荷不合法的 `reason` 只写出错位置的 JSON 路径（`$`、`$.quantity`；字面量 `null` 写 `the payload is null`）；中间件或处理器抛出的异常翻译为 `KERNEL_UNEXPECTED_001` + `kernel.invocation.unhandled_exception`，调用已中止时抛出的中止按取消归因；管道以成功结束而没有响应时返回 `KERNEL_UNEXPECTED_001` + `kernel.operation.no_response`。
-- **调用上下文**（RFC-0003、conventions/baggage-keys.md）：已登记 Baggage 键的值为空、超过 256 个 UTF-16 码元或含控制字符时，构造与派生上下文时丢弃该成员（幂等键除外）；trace-flags 只看最低位判断采样，其余位原样写出，没有上游的根调用写出 `01`；创建时截止时间已过报 `kernel.invocation.deadline_before_start`。
-- **管道**（RFC-0004 排序规则第 7 条）：`before` / `after` 的两端是中间件名（实例名或类型名），主体在声明时必须已登记。
-- **清单**（RFC-0002 解析规则 2）：成员名区分大小写，可选成员写成 `null` 不合法，接口版本只在 `requires[].version` 可带 `^`，`contributes.operations` 按操作 ID 文法校验。
+- **调用器**（RFC-0011 规则 2、5、9、10）：截止时间已过才开始的调用在第一个中间件之前以 `KERNEL_TIMEOUT_001` + `kernel.invocation.deadline_before_start` 结束；载荷不合法的 `reason` 只写出错位置的 JSON 路径：载荷是 `null`、语法不对或根上不合时写 `$`，值的类型不符时写解码器以 `RequestDecodeError` 报告、用 `JsonPath` 拼出的路径（`$.lines[1].quantity`、`$['unit price']`）；中间件或处理器抛出的异常翻译为 `KERNEL_UNEXPECTED_001` + `kernel.invocation.unhandled_exception`，调用已中止时抛出的中止按取消归因；管道以成功结束而没有响应时返回 `KERNEL_UNEXPECTED_001` + `kernel.operation.no_response`。
+- **调用上下文**（RFC-0003、conventions/baggage-keys.md）：已登记 Baggage 键的值为空、超过 256 个 UTF-16 码元或含控制字符时，由一组 Baggage 构造上下文（外部输入）丢弃该成员，`withBaggage` 逐项派生则抛出参数错误，幂等键两种情形都例外；`traceparent` 只认版本 `00` 与小写十六进制、全零的标识不合法，不合法的当作没给，采样只看标志的最低位，写出时只写 `00` 或 `01`，没有上游的根调用写 `01`。
+- **管道**（RFC-0004 排序规则第 7、8 条）：`before` / `after` 的两端是中间件名（实例名或类型名）；重复登记、未知阶段、约束主体未登记或有歧义在登记时立即报，约束目标未登记、有歧义、跨阶段与成环在排序时报。
+- **清单**（RFC-0002 解析规则 2）：成员名区分大小写，可选成员写成 `null` 不合法，同一层的重复成员名不合法，接口版本只在 `requires[].version` 可带 `^`，`activation` 写了就至少一项，`contributes.operations` 按操作 ID 文法校验。
 
 ## TypeScript 的形态
 
