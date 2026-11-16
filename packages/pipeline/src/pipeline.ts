@@ -106,7 +106,8 @@ interface Constraint {
  *
  * @remarks
  * 排序：先阶段；阶段内先位置（Beginning 在前），再归属的码元序，再登记顺序；最后按约束做稳定拓扑排序。
- * 登记时核对参数，约束的主体在声明时必须已登记，目标在排序时（`describe`、`dump`、`build`）解析，错误以 {@link FrameworkError} 抛出
+ * 报错的时机照 .NET（RFC-0004 排序规则第 8 条）：重复登记、未知阶段、约束主体未登记或有歧义在登记时立即报；约束目标未登记、
+ * 有歧义、跨阶段与成环在排序时（`describe`、`dump`、`build`）报。错误以 {@link FrameworkError} 抛出
  */
 export class PipelineBuilder {
   readonly #registrations: Registration[] = [];
@@ -124,7 +125,7 @@ export class PipelineBuilder {
    *
    * @param placement - 阶段内位置，缺省为 `End`
    * @param owner - 归属，缺省为 `app`
-   * @throws {@link FrameworkError} 阶段未知（`KERNEL_PIPELINE_002`）或其他参数不合法（`PRIMITIVES_VALIDATION_001`）时
+   * @throws {@link FrameworkError} 阶段未知（`KERNEL_PIPELINE_002`）、重复登记（`KERNEL_PIPELINE_003`）或其他参数不合法（`PRIMITIVES_VALIDATION_001`）时
    */
   useAt(middleware: Middleware, stage: PipelineStage, placement?: Placement, owner?: string): this {
     return this.#add(middleware, undefined, stage, placement ?? Placement.End, owner ?? AppOwner);
@@ -155,7 +156,7 @@ export class PipelineBuilder {
    * 两端都是中间件名：命名实例的实例名，或类型名（RFC-0004 排序规则第 7 条）。约束主体 `middleware` 在声明时必须已登记；
    * 目标 `other` 在排序时解析，未登记、对应多个中间件或不在同一阶段都是 `KERNEL_PIPELINE_003`
    *
-   * @throws {@link FrameworkError} 主体还没有登记时，码为 `KERNEL_PIPELINE_003`
+   * @throws {@link FrameworkError} 主体还没有登记或按名字有歧义时，码为 `KERNEL_PIPELINE_003`
    */
   before(middleware: string, other: string): this {
     this.#checkSubject(middleware);
@@ -166,7 +167,7 @@ export class PipelineBuilder {
   /**
    * 约束 `middleware` 在 `other` 之后；名字的解析与 {@link PipelineBuilder.before} 相同
    *
-   * @throws {@link FrameworkError} 主体还没有登记时，码为 `KERNEL_PIPELINE_003`
+   * @throws {@link FrameworkError} 主体还没有登记或按名字有歧义时，码为 `KERNEL_PIPELINE_003`
    */
   after(middleware: string, other: string): this {
     this.#checkSubject(middleware);
@@ -174,11 +175,12 @@ export class PipelineBuilder {
     return this;
   }
 
-  /** 约束主体在声明时必须已登记；有歧义的名字留到排序时与目标一起报 */
+  /** 约束主体在声明时必须已登记且按名字唯一，登记时立即报（RFC-0004 排序规则第 8 条） */
   #checkSubject(name: string): void {
     if (matching(this.#registrations, name).length === 0) {
       throw registrationError(`The middleware '${name}' must be registered before it declares an ordering constraint.`);
     }
+    single(this.#registrations, name);
   }
 
   /**
@@ -247,6 +249,14 @@ export class PipelineBuilder {
       throw invalid(`The owner of '${middleware.name}' must not be empty.`);
     }
     const display = instance === undefined ? middleware.name : `${middleware.name}[${instance}]`;
+    // 重复登记在登记时立即报，不等到排序（RFC-0004 排序规则第 8 条，照 .NET）：同一类型的默认实例只登记一次，
+    // 命名实例的名字在类型内唯一
+    const duplicate = this.#registrations.some(
+      ({ descriptor }) => descriptor.middleware === middleware.name && descriptor.instance === instance,
+    );
+    if (duplicate) {
+      throw registrationError(`The middleware '${display}' is registered more than once.`);
+    }
     this.#registrations.push({
       middleware,
       descriptor: Object.freeze({ stage, middleware: middleware.name, instance, owner, placement, display }),
@@ -257,8 +267,7 @@ export class PipelineBuilder {
 
   /** 按规则排序：先阶段；阶段内先位置，再归属，再登记顺序，最后按约束做稳定拓扑排序 */
   #sorted(): Registration[] {
-    this.#checkDuplicates();
-    // 约束按中间件名引用（实例名或类型名）：未登记、对应多个中间件、跨阶段都是登记错误
+    // 约束的目标在排序时解析（RFC-0004 排序规则第 8 条）：未登记、对应多个中间件、跨阶段都是登记错误
     const resolved: [Registration, Registration][] = this.#constraints.map(({ first, second }) => {
       const before = single(this.#registrations, first);
       const after = single(this.#registrations, second);
@@ -277,18 +286,6 @@ export class PipelineBuilder {
       result.push(...topologicalSort(stage, members, resolved));
     }
     return result;
-  }
-
-  /** 同一类型的默认实例只登记一次，命名实例的名字在类型内唯一 */
-  #checkDuplicates(): void {
-    const seen = new Set<string>();
-    for (const { descriptor } of this.#registrations) {
-      const key = `${descriptor.middleware}\u0000${descriptor.instance ?? ''}`;
-      if (seen.has(key)) {
-        throw registrationError(`The middleware '${descriptor.display}' is registered more than once.`);
-      }
-      seen.add(key);
-    }
   }
 }
 

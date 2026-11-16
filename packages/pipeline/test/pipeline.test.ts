@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { setTimeout as sleep } from 'node:timers/promises';
 
@@ -142,17 +143,13 @@ test('拒绝成环与不合法的约束', () => {
     PipelineErrorCode.Registration,
   );
 
-  const duplicate = new PipelineBuilder()
-    .useAt(noop('A'), PipelineStage.Validate)
-    .useAt(noop('A'), PipelineStage.Validate);
+  // 重复登记在登记时立即报（RFC-0004 排序规则第 8 条）；被拒的登记不留下
+  const duplicate = new PipelineBuilder().useAt(noop('A'), PipelineStage.Validate);
   assert.equal(
-    codeOf(() => duplicate.describe()),
+    codeOf(() => duplicate.useAt(noop('A'), PipelineStage.Handle)),
     PipelineErrorCode.Registration,
   );
-  assert.equal(
-    codeOf(() => duplicate.build(async () => Result.success())),
-    PipelineErrorCode.Registration,
-  );
+  assert.equal(duplicate.describe().length, 1);
 
   assert.equal(
     codeOf(() => parseStage('middle')),
@@ -201,15 +198,22 @@ test('命名实例彼此独立，但按类型的约束有歧义', () => {
     .useNamedInstance('guard-b', recording('Guard', log), PipelineStage.Observe, Placement.End, 'xihan.plugins.b');
   assert.equal(builder.dump(), 'observe      Guard[guard-a]\nobserve      Guard[guard-b]\n');
   assert.equal(builder.describe()[1]?.instance, 'guard-b');
-  builder.useAt(noop('Other'), PipelineStage.Observe).before('Guard', 'Other');
+  // 主体按类型名有歧义：声明时就报
+  builder.useAt(noop('Other'), PipelineStage.Observe);
+  assert.equal(
+    codeOf(() => builder.before('Guard', 'Other')),
+    PipelineErrorCode.Registration,
+  );
+  // 目标按类型名有歧义：排序时报
+  builder.before('Other', 'Guard');
   assert.equal(
     codeOf(() => builder.describe()),
     PipelineErrorCode.Registration,
   );
-  const twice = new PipelineBuilder()
-    .useNamedInstance('guard-a', noop('Guard'), PipelineStage.Observe)
-    .useNamedInstance('guard-a', noop('Guard'), PipelineStage.Observe);
-  assert.throws(() => twice.describe(), { message: "The middleware 'Guard[guard-a]' is registered more than once." });
+  const twice = new PipelineBuilder().useNamedInstance('guard-a', noop('Guard'), PipelineStage.Observe);
+  assert.throws(() => twice.useNamedInstance('guard-a', noop('Guard'), PipelineStage.Observe), {
+    message: "The middleware 'Guard[guard-a]' is registered more than once.",
+  });
 });
 
 test('短路跳过下游', async () => {
@@ -286,4 +290,68 @@ test('次序约束可以按实例名声明，主体在声明时必须已登记',
     message:
       "The name 'Audit' refers to several middleware (Guard[Audit], Audit); ordering constraints by it are ambiguous.",
   });
+});
+
+/** ordering.json 的一步：按名字登记一个实例，或一条按名字的约束 */
+type OrderingStep =
+  | { readonly use: string; readonly stage: string; readonly placement: 'beginning' | 'end'; readonly owner: string }
+  | { readonly before: readonly [string, string] }
+  | { readonly after: readonly [string, string] };
+
+/** 回放时按名字登记的实例都用这个类型名，向量 Dump 里的 {type} 换成它 */
+const vectorType = 'VectorMiddleware';
+
+function apply(builder: PipelineBuilder, step: OrderingStep): void {
+  if ('use' in step) {
+    builder.useNamedInstance(
+      step.use,
+      noop(vectorType),
+      step.stage as PipelineStage,
+      step.placement === 'beginning' ? Placement.Beginning : Placement.End,
+      step.owner,
+    );
+  } else if ('before' in step) {
+    builder.before(step.before[0], step.before[1]);
+  } else {
+    builder.after(step.after[0], step.after[1]);
+  }
+}
+
+test('排序、打印与报错时机遵循 pipeline/ordering.json', () => {
+  const url = new URL('../../../spec/conformance/vectors/pipeline/ordering.json', import.meta.url);
+  const vectors = JSON.parse(readFileSync(url, 'utf8')) as {
+    cases: { name: string; steps: OrderingStep[]; dump: string }[];
+    errors: { name: string; steps: OrderingStep[]; error: string; at: number | 'sort' }[];
+  };
+  for (const c of vectors.cases) {
+    const builder = new PipelineBuilder();
+    for (const step of c.steps) {
+      apply(builder, step);
+    }
+    assert.equal(builder.dump(), c.dump.replaceAll('{type}', vectorType), c.name);
+  }
+  for (const c of vectors.errors) {
+    const builder = new PipelineBuilder();
+    // 期望在第 at 步报错的，前面各步都必须成功；at 为 sort 的，登记全部成功、在排序时报
+    c.steps.forEach((step, index) => {
+      if (index === c.at) {
+        assert.equal(
+          codeOf(() => apply(builder, step)),
+          c.error,
+          `${c.name} at step ${index}`,
+        );
+      } else if (c.at === 'sort' || index < c.at) {
+        apply(builder, step);
+      }
+    });
+    if (c.at === 'sort') {
+      for (const sort of [
+        () => builder.describe(),
+        () => builder.dump(),
+        () => builder.build(async () => Result.success()),
+      ]) {
+        assert.equal(codeOf(sort), c.error, `${c.name} when sorting`);
+      }
+    }
+  }
 });
