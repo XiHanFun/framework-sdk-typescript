@@ -26,7 +26,7 @@ export const OperationMessageKey = Object.freeze({
   NotFound: 'kernel.operation.unknown',
   /** 载荷不合法，参数 `id`、`reason`（只写出错位置的 JSON 路径） */
   InvalidPayload: 'kernel.operation.invalid_payload',
-  /** 类型不符，参数 `id`、`expected`、`actual` */
+  /** 类型不符，参数只有 `id`：类型名是实现语言的，不上线（ADR-0236） */
   TypeMismatch: 'kernel.operation.type_mismatch',
   /** 管道以成功结束而没有响应，参数 `id` */
   NoResponse: 'kernel.operation.no_response',

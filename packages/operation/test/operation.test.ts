@@ -158,10 +158,10 @@ test('类型化调用核对契约', async () => {
   const mismatch = await invoker.invokeTyped(InvocationContext.create(), impostor, { quantity: 3 });
   assert.equal(codeOf(mismatch), OperationErrorCode.TypeMismatch);
   assert.ok(!mismatch.ok);
-  assert.deepEqual(Object.keys(mismatch.error.details ?? {}).sort(), ['actual', 'expected', 'id']);
+  assert.deepEqual(mismatch.error.details, { id: 'orders.create' });
   assert.equal(
     mismatch.error.message,
-    "Operation 'orders.create' handles 'the registered contract', but 'another contract object' was supplied.",
+    "Operation 'orders.create' was invoked with request or response types that do not match its registration.",
   );
 
   const unknown = defineContract<CreateOrder, string>({ id: 'orders.unknown', expose: [] });

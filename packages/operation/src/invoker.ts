@@ -146,13 +146,9 @@ export class OperationInvoker {
       return Result.fail(notFound(contract.id));
     }
     if (descriptor.contract !== contract) {
-      // TypeScript 的类型参数在运行期不存在，没有类型名可写：expected / actual 只给人看，写明是哪一份契约
+      // 只带操作 ID：类型名是实现语言的，各语言写不出同样的参数（RFC-0011「错误码」，ADR-0236）
       return Result.fail(
-        ErrorInfo.validation(OperationErrorCode.TypeMismatch, OperationMessageKey.TypeMismatch, {
-          id: contract.id,
-          expected: 'the registered contract',
-          actual: 'another contract object',
-        }),
+        ErrorInfo.validation(OperationErrorCode.TypeMismatch, OperationMessageKey.TypeMismatch, { id: contract.id }),
       );
     }
     if (startedTooLate(context)) {

@@ -12,8 +12,7 @@ export const PrimitivesMessageKey = Object.freeze({
  * SDK 自带的默认英文模板：原语层与内核里 SDK 会用到的消息键
  *
  * @remarks
- * 与 spec/conformance/vectors/primitives/kernel-messages.json 逐字相同（RFC-0011「错误码」，模板以 .NET 的 en-US 为准）；
- * `kernel.invocation.unhandled_exception` 不在向量里，取自 .NET 内核的语言文件，供调用器翻译未处理的异常（RFC-0011 规则 5）
+ * 与 spec/conformance/vectors/primitives/kernel-messages.json 逐字相同（RFC-0011「错误码」，模板以 .NET 的 en-US 为准）
  */
 export const builtInTemplates: Readonly<Record<string, string>> = Object.freeze({
   'primitives.result.uninitialized': 'The result is uninitialized: a default value is not a valid result.',
@@ -23,7 +22,8 @@ export const builtInTemplates: Readonly<Record<string, string>> = Object.freeze(
   'kernel.invocation.unhandled_exception': 'An unhandled exception occurred during the invocation.',
   'kernel.operation.unknown': "Operation '{id}' is not registered.",
   'kernel.operation.invalid_payload': "The payload of operation '{id}' is not valid: {reason}",
-  'kernel.operation.type_mismatch': "Operation '{id}' handles '{expected}', but '{actual}' was supplied.",
+  'kernel.operation.type_mismatch':
+    "Operation '{id}' was invoked with request or response types that do not match its registration.",
   'kernel.operation.no_response': "Operation '{id}' completed without producing a response.",
   'kernel.operation.duplicate': "Operation '{id}' is already registered by '{owner}'.",
   'kernel.operation.registry_full': 'The operation registry has reached its capacity of {capacity}.',
