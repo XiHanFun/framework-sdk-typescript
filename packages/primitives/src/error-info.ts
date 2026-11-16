@@ -1,7 +1,7 @@
 import { builtInMessages } from './built-in-messages.ts';
 import { ErrorCode, ErrorKind, errorCodeDomain, errorCodeKind, invalidErrorCode, isErrorCode } from './error-code.ts';
 import { FrameworkError } from './framework.ts';
-import { freezeJsonObject, isPlainObject, type JsonObject } from './json.ts';
+import { freezeJsonObject, isPlainObject, type JsonObject, parseJson } from './json.ts';
 import { describe, isMessageKey, resolveMessage } from './messages.ts';
 
 /**
@@ -127,11 +127,24 @@ export class ErrorInfo {
   }
 
   /**
+   * 从 JSON 文本还原
+   *
+   * @remarks
+   * 同一层的重复成员名不合法（含内部错误里的，ADR-0235）；其余规则同 {@link ErrorInfo.fromJSON}
+   *
+   * @throws {@link FrameworkError} 不是 JSON、有重复成员或不合读写规则时，码为 `PRIMITIVES_VALIDATION_001`
+   */
+  static parse(text: string): ErrorInfo {
+    return ErrorInfo.fromJSON(parseJson(text));
+  }
+
+  /**
    * 从线上编码还原
    *
    * @remarks
    * 读写规则见 RFC-0001「Result」：`code` 必填且合文法，`message` 必填且非空，成为 {@link ErrorInfo.text}；
-   * `messageKey`、`details`、`inner` 可选，写了就必须合法，写成 `null` 不合法；未知成员忽略
+   * `messageKey`、`details`、`inner` 可选，写了就必须合法，写成 `null` 不合法；未知成员忽略。
+   * 已解析的值里看不出重复成员，从文本读取时用 {@link ErrorInfo.parse}
    *
    * @throws {@link FrameworkError} 不合规则时，码为 `PRIMITIVES_VALIDATION_001`
    */

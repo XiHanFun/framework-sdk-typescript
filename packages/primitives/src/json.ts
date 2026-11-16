@@ -91,6 +91,75 @@ function freezeJson(value: unknown, path: string, ancestors: Set<object>): JsonV
   }
 }
 
+/**
+ * 解析 JSON 文本，并拒绝同一层的重复成员名
+ *
+ * @remarks
+ * `JSON.parse` 遇到重复成员时悄悄取最后一个；Result、Error 与清单里同一层的重复成员名不合法（RFC-0001「Result」、
+ * RFC-0002 解析规则 2，ADR-0235），所以在语法检查通过之后再按词法查一遍
+ *
+ * @throws {@link FrameworkError} 不是合法的 JSON 或有重复成员时，码为 `PRIMITIVES_VALIDATION_001`，语法错误在 `cause` 里
+ */
+export function parseJson(text: string): JsonValue {
+  let value: JsonValue;
+  try {
+    value = JSON.parse(text) as JsonValue;
+  } catch (cause) {
+    throw new FrameworkError(ErrorCode.InvalidArgument, 'The text is not valid JSON.', { cause });
+  }
+  const duplicate = findDuplicateMember(text);
+  if (duplicate !== undefined) {
+    throw new FrameworkError(
+      ErrorCode.InvalidArgument,
+      `The member '${duplicate}' appears more than once in the same JSON object.`,
+    );
+  }
+  return value;
+}
+
+/**
+ * 在已通过语法检查的 JSON 文本里找同一层重复的成员名；没有时为 `undefined`
+ *
+ * @remarks
+ * 只需跟踪嵌套：对象层记成员名，数组层不记；对象里 `{` 与 `,` 之后的字符串是成员名。
+ * 成员名按解码后的文本比较，`"a"` 与 `"a"` 是同一个
+ */
+function findDuplicateMember(text: string): string | undefined {
+  const scopes: (Set<string> | undefined)[] = [];
+  let expectName = false;
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text.charAt(index);
+    if (char === '"') {
+      let end = index + 1;
+      while (text.charAt(end) !== '"') {
+        end += text.charAt(end) === '\\' ? 2 : 1;
+      }
+      if (expectName) {
+        const name = JSON.parse(text.slice(index, end + 1)) as string;
+        const scope = scopes.at(-1);
+        if (scope?.has(name) === true) {
+          return name;
+        }
+        scope?.add(name);
+        expectName = false;
+      }
+      index = end;
+    } else if (char === '{') {
+      scopes.push(new Set());
+      expectName = true;
+    } else if (char === '[') {
+      scopes.push(undefined);
+      expectName = false;
+    } else if (char === '}' || char === ']') {
+      scopes.pop();
+      expectName = false;
+    } else if (char === ',') {
+      expectName = scopes.at(-1) !== undefined;
+    }
+  }
+  return undefined;
+}
+
 function notJson(path: string): FrameworkError {
   return new FrameworkError(ErrorCode.InvalidArgument, `The value at '${path}' is not a JSON value.`);
 }

@@ -1,7 +1,7 @@
 import { ErrorCode } from './error-code.ts';
 import { ErrorInfo, type ErrorInfoJson } from './error-info.ts';
 import { FrameworkError } from './framework.ts';
-import { isPlainObject, type JsonValue } from './json.ts';
+import { isPlainObject, type JsonValue, parseJson } from './json.ts';
 import { Maybe } from './maybe.ts';
 
 /**
@@ -183,7 +183,38 @@ export const Result = Object.freeze({
       return Result.ok(value === null ? Maybe.none<T>() : Maybe.some(decode(value)));
     });
   },
+
+  parse,
+
+  /**
+   * 从 JSON 文本还原值类型为 Maybe 的结果；同一层的重复成员名不合法，其余规则同 {@link Result.fromJSONMaybe}
+   *
+   * @throws {@link FrameworkError} 不是 JSON、有重复成员或不合读写规则时
+   */
+  parseMaybe<T>(text: string, decode: (value: JsonValue) => T): Result<Maybe<T>> {
+    return Result.fromJSONMaybe(parseJson(text), decode);
+  },
 });
+
+/**
+ * 从 JSON 文本还原没有值的结果
+ *
+ * @remarks
+ * 同一层的重复成员名不合法（`JSON.parse` 会悄悄取最后一个，ADR-0235）；其余规则同 {@link Result.fromJSON}
+ *
+ * @throws {@link FrameworkError} 不是 JSON、有重复成员或不合读写规则时
+ */
+function parse(text: string): Result<void>;
+/**
+ * 从 JSON 文本还原带值的结果，成功值交给 `decode` 转换
+ *
+ * @throws {@link FrameworkError} 不是 JSON、有重复成员或不合读写规则时；`decode` 抛出的异常原样传出
+ */
+function parse<T>(text: string, decode: (value: JsonValue) => T): Result<T>;
+function parse<T>(text: string, decode?: (value: JsonValue) => T): Result<T> | Result<void> {
+  const json = parseJson(text);
+  return decode === undefined ? fromJSON(json) : fromJSON(json, decode);
+}
 
 /**
  * 从线上编码还原没有值的结果

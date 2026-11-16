@@ -36,6 +36,7 @@ import {
   messageKeyDomain,
   PipelineStage,
   PrimitivesMessageKey,
+  parseJson,
   pipelineStageOrdinal,
   pipelineStages,
   placeholders,
@@ -574,4 +575,40 @@ test('JSON 写不出的数值：非数、无穷与 bigint', () => {
     '12345678901234567890 0000012345678901234567890 12,345,678,901,234,567,890',
   );
   assert.equal(describe('orders.line.invalid', { z: -0, a: 1e-7 }), 'orders.line.invalid (a=1E-07, z=-0)');
+});
+
+test('同一层的重复成员名不合法（wire-encoding.json 的 duplicates）', () => {
+  const { duplicates } = vector<{
+    duplicates: { name: string; target: 'result' | 'error'; kind?: 'value' | 'unit'; text: string }[];
+  }>('wire-encoding.json');
+  for (const c of duplicates) {
+    const read = () => {
+      if (c.target === 'error') {
+        return ErrorInfo.parse(c.text);
+      }
+      return c.kind === 'unit' ? Result.parse(c.text) : Result.parse(c.text, (value) => value);
+    };
+    throwsCode(read, ErrorCode.InvalidArgument);
+  }
+  // 从文本读取的合法样例与从值读取的结果相同
+  assert.equal(Result.parse('{"ok":true}').ok, true);
+  assert.equal(Result.parse('{"ok":true,"value":1}', Number).valueOr(0), 1);
+  assert.ok(!Result.parseMaybe('{"ok":true,"value":null}', String).valueOrThrow().hasValue);
+  assert.equal(ErrorInfo.parse('{"code":"KERNEL_UNEXPECTED_001","message":"x"}').text, 'x');
+  throwsCode(() => Result.parse('{"ok":'), ErrorCode.InvalidArgument);
+});
+
+test('parseJson 只拒绝同一层的重复成员', () => {
+  // 不同层、不同对象、数组里的同名成员都不算重复
+  assert.deepEqual(parseJson('{"a":{"a":1},"b":[{"a":1},{"a":2}],"c":"\\"a\\""}'), {
+    a: { a: 1 },
+    b: [{ a: 1 }, { a: 2 }],
+    c: '"a"',
+  });
+  assert.deepEqual(parseJson('[{}, "a", {"a": []}]'), [{}, 'a', { a: [] }]);
+  assert.equal(parseJson('"{\\"a\\":1,\\"a\\":2}"'), '{"a":1,"a":2}', 'names inside strings are not members');
+  for (const text of ['{"a":1,"a":2}', '{"x":{"b":1,"b":2}}', '[{"a":1,"a":1}]', '{"a":1,"\u0061":2}', '{"":1,"":2}']) {
+    assert.throws(() => parseJson(text), FrameworkError, text);
+  }
+  assert.throws(() => parseJson('{,}'), { message: 'The text is not valid JSON.' });
 });
