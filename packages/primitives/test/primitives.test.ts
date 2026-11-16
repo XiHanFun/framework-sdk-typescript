@@ -557,3 +557,21 @@ test('框架信息与 FrameworkError', () => {
   assert.equal(info.messageKey, undefined);
   assert.equal(new FrameworkError('bad', 'x').toErrorInfo().code, ErrorCode.InvalidArgument);
 });
+
+test('JSON 写不出的数值：非数、无穷与 bigint', () => {
+  assert.equal(
+    formatMessage('{a} {b} {c} {d}', {
+      a: Number.NaN,
+      b: Number.POSITIVE_INFINITY,
+      c: Number.NEGATIVE_INFINITY,
+      d: -0,
+    }),
+    'NaN Infinity -Infinity -0',
+  );
+  assert.equal(formatMessage('{n:F2} {n:N0}', { n: Number.NaN }), 'NaN NaN', 'F and N fall back to the plain text');
+  assert.equal(
+    formatMessage('{big} {big:D25} {big:N0}', { big: 12345678901234567890n }),
+    '12345678901234567890 0000012345678901234567890 12,345,678,901,234,567,890',
+  );
+  assert.equal(describe('orders.line.invalid', { z: -0, a: 1e-7 }), 'orders.line.invalid (a=1E-07, z=-0)');
+});

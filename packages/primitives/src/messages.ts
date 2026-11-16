@@ -206,7 +206,8 @@ function formatNumber(value: unknown, format: string): string | undefined {
  * 2.675 的二进制值略小于 2.675，按精确值应得 2.67，ICU 却当成正好一半得 2.68
  */
 function formatFixed(value: number | bigint, digits: number, grouping: boolean): string {
-  const negative = value < 0;
+  // 负数舍入成零时保留负号，负零也写负号（RFC-0010「模板」，照 .NET）
+  const negative = value < 0 || Object.is(value, -0);
   const { numerator, scale } = exactDecimal(value);
   // 值 = numerator / 10^scale；乘以 10^digits 后按一半取偶舍入成整数
   let units: bigint;
@@ -253,8 +254,8 @@ function exactDecimal(value: number | bigint): { numerator: bigint; scale: numbe
  * 把参数值转成文本（RFC-0010「值的文本形式」）
  *
  * @remarks
- * 字符串原样；数值按 `String`，在 1e-4 ≤ |x| < 1e15 内正是不用指数的最短往返形式，整数值不带小数点；
- * 布尔写 `true` / `false`；`null` 写空串。规范不作规定的数组与对象按 JSON
+ * 字符串原样；数值见 {@link formatFloat}，bigint 写十进制；布尔写 `true` / `false`；`null` 写空串。
+ * 规范不作规定的数组与对象按 JSON
  */
 function display(value: unknown): string {
   if (typeof value === 'string') {
@@ -262,6 +263,9 @@ function display(value: unknown): string {
   }
   if (value === null) {
     return '';
+  }
+  if (typeof value === 'number') {
+    return formatFloat(value);
   }
   if (value !== null && typeof value === 'object') {
     try {
@@ -274,6 +278,35 @@ function display(value: unknown): string {
     }
   }
   return String(value);
+}
+
+/**
+ * 数值的文本形式（RFC-0010「值的文本形式」，照 .NET 10 的实测）
+ *
+ * @remarks
+ * 1e-4 ≤ |x| < 1e17 或 x 为零时写最短往返的十进制、不用指数，整数值不带小数点；范围外写最短往返的有效数字加
+ * `E`、总写的符号与至少两位的指数（`1E+17`、`9.9E-05`、`5E-324`）；负零写 `-0`，非数与无穷写 `NaN`、`Infinity`、`-Infinity`。
+ * JavaScript 的 `String` 要到 1e21 与 1e-7 才换指数、负零写 `0`，所以另行处理
+ */
+function formatFloat(value: number): string {
+  if (Number.isNaN(value)) {
+    return 'NaN';
+  }
+  if (!Number.isFinite(value)) {
+    return value > 0 ? 'Infinity' : '-Infinity';
+  }
+  if (value === 0) {
+    return Object.is(value, -0) ? '-0' : '0';
+  }
+  const magnitude = Math.abs(value);
+  if (magnitude >= 1e-4 && magnitude < 1e17) {
+    // 这个范围里 String 正是不用指数的最短往返形式
+    return String(value);
+  }
+  // toExponential 不带参数时给出最短往返的有效数字，如 1.2345678901234568e+17
+  const [digits = '', exponent = '0'] = value.toExponential().split('e');
+  const sign = exponent.startsWith('-') ? '-' : '+';
+  return `${digits}E${sign}${exponent.replace(/^[+-]/, '').padStart(2, '0')}`;
 }
 
 /**
@@ -291,7 +324,7 @@ export function positional(...values: unknown[]): Record<string, unknown> {
  * 在没有文案时描述一个消息：`键 (k=v, ...)`，参数按名字升序；没有参数时只有键
  *
  * @remarks
- * 值按 RFC-0010「值的文本形式」写；规范不规定参数的先后，这里按名字升序（与 Go 一致）；值为 `undefined` 的参数视为没有
+ * 值按 RFC-0010「值的文本形式」写；参数按名字的序数（UTF-16 码元）顺序排列（ADR-0235）；值为 `undefined` 的参数视为没有
  */
 export function describe(key: string, args?: MessageArguments): string {
   if (args === undefined) {
@@ -299,6 +332,7 @@ export function describe(key: string, args?: MessageArguments): string {
   }
   const names = Object.keys(args)
     .filter((name) => args[name] !== undefined)
+    // 缺省的 sort 按 UTF-16 码元比较，正是规范要求的序数顺序
     .sort();
   if (names.length === 0) {
     return key;
