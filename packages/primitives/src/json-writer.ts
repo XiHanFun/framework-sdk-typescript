@@ -88,7 +88,8 @@ export function floatText(value: number): string {
  * - 浮点按文本形式写，整数值的浮点补上 `.0`（`2.0`、`-0.0`、`1E+17` 原样），否则对方读成整数；
  *   非有限的浮点按 `options.nonFinite`：缺省写成字符串 `"NaN"`、`"Infinity"`、`"-Infinity"`（无类型的值，如错误细节），
  *   `reject` 时写不出（类型化的值，如操作的响应：不写成 `null` 或字符串，RFC-0011 规则 2）。
- * - {@link JsonNumber} 照原文写。{@link JsonMembers} 按文档顺序写成员。字符串按 {@link quoteJsonString} 转义。
+ * - {@link JsonNumber} 照原文写；只有上溢的（`1e400`）在缺省模式下按值模型写成字符串 `"Infinity"`。
+ * - {@link JsonMembers} 按文档顺序写成员。字符串按 {@link quoteJsonString} 转义。
  *
  * @throws TypeError 与 `JSON.stringify` 一样，值没有 JSON 表示（顶层是 `undefined`、函数或 symbol）、有循环引用，
  * 或 `nonFinite` 为 `reject` 时遇到非有限的浮点
@@ -140,7 +141,8 @@ function writeValue(input: unknown, ancestors: Set<object>, reject: boolean): st
     return floatWire(value.value, reject);
   }
   if (value instanceof JsonNumber) {
-    return value.text;
+    // 无类型的值按值模型：上溢的数字是无穷，写成字符串，与 .NET 读成 double 再写出相同；类型化的值（任意 JSON 的成员）照原文
+    return reject || Number.isFinite(value.value) ? value.text : floatWire(value.value, false);
   }
   if (ancestors.has(value)) {
     throw new TypeError('The value contains a circular reference.');

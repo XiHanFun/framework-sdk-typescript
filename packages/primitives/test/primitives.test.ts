@@ -761,7 +761,12 @@ test('数字按值模型读写', () => {
   assert.equal(Number(infinity), Number.POSITIVE_INFINITY);
   assert.deepEqual(tiny, new JsonNumber('1e-400'));
   assert.equal(Number(tiny), 0);
-  assert.equal(writeJson(read.root), '[1,0,-0.0,2.0,100.0,1.5,9007199254740993,9223372036854775808,1e400,1e-400]');
+  assert.equal(writeJson(read.root), '[1,0,-0.0,2.0,100.0,1.5,9007199254740993,9223372036854775808,"Infinity",1e-400]');
+  // 类型化的值照原文写回，上溢的也不变成无穷
+  assert.equal(
+    writeJson(read.root, { nonFinite: 'reject' }),
+    '[1,0,-0.0,2.0,100.0,1.5,9007199254740993,9223372036854775808,1e400,1e-400]',
+  );
   // 有效数字比双精度多的保留原文，能往返的照常读成数值
   const precise = readJsonText(
     '[0.1000000000000000000001,0.30000000000000004,1E+17,100000000000000000.0,123456789012345678901234567890]',
