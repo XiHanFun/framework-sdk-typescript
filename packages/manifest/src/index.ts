@@ -16,6 +16,7 @@ export {
   isCapabilityId,
   isManifestId,
   isRequirementSatisfiedBy,
+  maxInterfaceVersion,
   parseCapabilityDeclaration,
   parseCapabilityRequirement,
 } from './capability.ts';

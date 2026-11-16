@@ -7,7 +7,7 @@ const capabilityIdPattern = /^[a-z][a-z0-9]*\.[a-z][a-z0-9-]*$/;
 /** 能力声明文本 `id@version` */
 const declarationPattern = /^([a-z][a-z0-9]*\.[a-z][a-z0-9-]*)@([1-9][0-9]*)$/;
 
-/** 能力依赖文本 `id@[^]version[?]`（conventions/capability-ids.md） */
+/** 能力依赖文本 `id@[^]version[?]`（conventions/capability-ids.md）；整串匹配，JavaScript 的 `$` 不在结尾的换行前匹配 */
 const requirementPattern = /^([a-z][a-z0-9]*\.[a-z][a-z0-9-]*)@(\^?)([1-9][0-9]*)(\??)$/;
 
 /**
@@ -107,20 +107,36 @@ export function isRequirementSatisfiedBy(
 }
 
 /**
- * 把十进制数字串转成版本；超出安全整数范围时为 `undefined`
+ * 接口版本的上限：32 位有符号整数（conventions/capability-ids.md 规则 2，ADR-0236）
+ */
+export const maxInterfaceVersion = 2_147_483_647;
+
+/** 接口版本的文本：不带前导零、符号与空白的正整数 */
+const versionTextPattern = /^[1-9][0-9]*$/;
+
+/**
+ * 把十进制数字串转成版本；不是不带前导零的正整数或超过 {@link maxInterfaceVersion} 时为 `undefined`
  *
  * @internal
  */
 export function toVersion(digits: string | undefined): number | undefined {
-  const version = Number(digits);
-  return Number.isSafeInteger(version) && version >= 1 ? version : undefined;
+  return digits !== undefined && isVersionText(digits) ? Number(digits) : undefined;
 }
 
 /**
- * 判断一个值是否是合法的接口版本：正的安全整数
+ * 判断文本是否是接口版本：不带前导零、符号与空白的正整数，不超过 {@link maxInterfaceVersion}；整串匹配
+ *
+ * @internal
+ */
+export function isVersionText(text: string): boolean {
+  return versionTextPattern.test(text) && Number(text) <= maxInterfaceVersion;
+}
+
+/**
+ * 判断一个值是否是合法的接口版本：1 到 {@link maxInterfaceVersion} 的整数
  *
  * @internal
  */
 export function isInterfaceVersion(version: unknown): version is number {
-  return typeof version === 'number' && Number.isSafeInteger(version) && version >= 1;
+  return typeof version === 'number' && Number.isInteger(version) && version >= 1 && version <= maxInterfaceVersion;
 }

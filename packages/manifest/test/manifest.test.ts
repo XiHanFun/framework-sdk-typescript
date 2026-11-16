@@ -307,12 +307,14 @@ test('能力依赖文本遵循向量', () => {
     assert.deepEqual(requirement, { id: c.id, version: c.version, optional: c.optional }, c.input);
   }
   for (const text of vectors.invalid) {
-    assert.equal(parseCapabilityRequirement(text), undefined, `${text} must not parse`);
+    assert.equal(parseCapabilityRequirement(text), undefined, `${JSON.stringify(text)} must not parse`);
   }
   const declaration = parseCapabilityDeclaration('caching.distributed@2');
   assert.ok(declaration);
   assert.equal(capabilityDeclarationText(declaration), 'caching.distributed@2');
   assert.equal(parseCapabilityDeclaration('caching.distributed@^2'), undefined);
+  assert.equal(parseCapabilityDeclaration('caching.distributed@02'), undefined);
+  assert.equal(parseCapabilityDeclaration('caching.distributed@2147483648'), undefined);
   const requirement = parseCapabilityRequirement('caching.distributed@^2?');
   assert.ok(requirement);
   assert.ok(isRequirementSatisfiedBy(requirement, declaration));
