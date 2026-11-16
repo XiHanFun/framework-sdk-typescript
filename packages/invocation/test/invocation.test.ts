@@ -207,7 +207,7 @@ test('traceparent 的解析与写出遵循向量：只认版本 00，标志只�
   assert.ok(root.sampled && root.traceParent.endsWith('-01'), 'the root writes 01');
 });
 
-test('已登记键的值不合约束时在构造与派生上下文时丢弃，幂等键除外', () => {
+test('外部输入的 Baggage 丢弃不合的成员，程序内逐项派生给出不合的值是编程错误，幂等键除外', () => {
   const url = new URL('../../../spec/conformance/vectors/primitives/baggage-keys.json', import.meta.url);
   const { values } = JSON.parse(readFileSync(url, 'utf8')) as {
     values: { acceptable: string[]; unacceptable: string[] };
@@ -229,12 +229,19 @@ test('已登记键的值不合约束时在构造与派生上下文时丢弃，�
     assert.equal(context.principal, 'p1', 'the other members stay');
     assert.equal(context.idempotencyKey, value, 'the idempotency key is never dropped');
     assert.equal(context.findBaggage('xihan.feature-flag'), value, 'only registered keys are constrained');
-    // 派生时同样丢弃，原有的值也不留
-    const derived = InvocationContext.create({ baggage: { [BaggageKey.Correlation]: 'c1' } }).withBaggage(
-      BaggageKey.Correlation,
-      value,
+    // 程序内逐项派生：抛出，不静默丢弃也不保留原值（ADR-0235）
+    const origin = InvocationContext.create({ baggage: { [BaggageKey.Correlation]: 'c1' } });
+    assert.throws(
+      () => origin.withBaggage(BaggageKey.Correlation, value),
+      (error: unknown) => error instanceof FrameworkError && error.code === ErrorCode.InvalidArgument,
     );
-    assert.equal(derived.correlation, undefined);
+    assert.equal(origin.correlation, 'c1', 'the original context is untouched');
+    assert.equal(
+      origin.withBaggage(BaggageKey.IdempotencyKey, value).idempotencyKey,
+      value,
+      'the idempotency key is exempt',
+    );
+    assert.equal(origin.withBaggage('xihan.feature-flag', value).findBaggage('xihan.feature-flag'), value);
   }
 });
 

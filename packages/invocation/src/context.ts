@@ -90,7 +90,7 @@ export interface InvocationContextOptions {
   readonly traceParent?: string;
   /** 显式给出的追踪；不合法是编程错误；没给 `sampled` 时按上游已采样处理（RFC-0003 第 7 条）；与 `traceParent` 二选一 */
   readonly trace?: { readonly traceId: string; readonly spanId: string; readonly sampled?: boolean };
-  /** Baggage；键必须符合 `xihan.<name>`，已登记键的值不合约束的成员丢弃（幂等键除外） */
+  /** Baggage（外部输入）；键必须符合 `xihan.<name>`，已登记键的值不合约束的成员丢弃（幂等键除外） */
   readonly baggage?: Readonly<Record<string, string>>;
 }
 
@@ -240,13 +240,22 @@ export class InvocationContext {
    * 派生一个多一个 Baggage 键值的上下文
    *
    * @remarks
-   * 进程内可以带格式合法的未登记键，它们不出进程（RFC-0003 第 3 条）。已登记键的值不合约束时，派生的上下文里没有这个键
-   * （原有的值也不留），见 {@link isBaggageValueAcceptable}
+   * 进程内可以带格式合法的未登记键，它们不出进程（RFC-0003 第 3 条）。程序内逐项派生给已登记的键一个不合约束的值
+   * （见 {@link isBaggageValueAcceptable}）是编程错误，抛出而不是静默丢弃，与键不合文法时一样；幂等键例外
+   * （conventions/baggage-keys.md，ADR-0235）。外部输入在 {@link InvocationContext.create} 里丢弃不合的成员
    *
-   * @throws {@link FrameworkError} 键不符合 `xihan.<name>` 时
+   * @throws {@link FrameworkError} 键不符合 `xihan.<name>`、值不是字符串或已登记键的值不合约束时，码为 `PRIMITIVES_VALIDATION_001`
    */
   withBaggage(key: string, value: string): InvocationContext {
-    return new InvocationContext({ ...this.#state, baggage: copyBaggage({ ...this.#state.baggage, [key]: value }) });
+    checkBaggageMember(key, value);
+    if (isBaggageKeyRegistered(key) && key !== BaggageKey.IdempotencyKey && !isBaggageValueAcceptable(value)) {
+      // 值可能含控制字符，不写进消息
+      throw invalid(
+        `The baggage value of '${key}' must not be empty, longer than 256 UTF-16 code units or contain control characters.`,
+      );
+    }
+    const baggage = Object.freeze({ ...this.#state.baggage, [key]: value });
+    return new InvocationContext({ ...this.#state, baggage });
   }
 
   /**
@@ -380,7 +389,7 @@ function resolveTrace(options: InvocationContextOptions): Pick<State, 'traceId' 
 }
 
 /**
- * 复制并冻结 Baggage
+ * 把一组外部输入的 Baggage 复制并冻结
  *
  * @remarks
  * 键不合格式、值不是字符串是编程错误；已登记键的值不合约束（空、超过 256 个 UTF-16 码元、含控制字符）的成员丢弃，
@@ -390,18 +399,23 @@ function resolveTrace(options: InvocationContextOptions): Pick<State, 'traceId' 
 function copyBaggage(baggage: Readonly<Record<string, string>>): Readonly<Record<string, string>> {
   const copy: Record<string, string> = {};
   for (const [key, value] of Object.entries(baggage)) {
-    if (!isBaggageKeyWellFormed(key)) {
-      throw invalid(`The baggage key '${key}' must match xihan.<name>.`);
-    }
-    if (typeof value !== 'string') {
-      throw invalid(`The baggage value of '${key}' must be a string.`);
-    }
+    checkBaggageMember(key, value);
     if (isBaggageKeyRegistered(key) && key !== BaggageKey.IdempotencyKey && !isBaggageValueAcceptable(value)) {
       continue;
     }
     copy[key] = value;
   }
   return Object.freeze(copy);
+}
+
+/** 键不合 `xihan.<name>`、值不是字符串在任何入口都是编程错误 */
+function checkBaggageMember(key: string, value: unknown): void {
+  if (!isBaggageKeyWellFormed(key)) {
+    throw invalid(`The baggage key '${key}' must match xihan.<name>.`);
+  }
+  if (typeof value !== 'string') {
+    throw invalid(`The baggage value of '${key}' must be a string.`);
+  }
 }
 
 function invalid(message: string): FrameworkError {
