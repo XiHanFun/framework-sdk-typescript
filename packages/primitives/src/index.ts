@@ -35,6 +35,7 @@ export {
   isPlainObject,
   JsonMembers,
   type JsonNode,
+  JsonNumber,
   type JsonObject,
   type JsonPrimitive,
   type JsonValue,
@@ -50,7 +51,7 @@ export {
   readJsonText,
   toJsonValue,
 } from './json-text.ts';
-export { floatText, quoteJsonString, writeJson } from './json-writer.ts';
+export { floatText, type JsonWriteOptions, quoteJsonString, writeJson } from './json-writer.ts';
 export {
   canTransition,
   isLifecycleState,

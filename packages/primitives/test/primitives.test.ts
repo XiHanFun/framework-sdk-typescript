@@ -31,6 +31,7 @@ import {
   isTerminal,
   JsonMembers,
   type JsonNode,
+  JsonNumber,
   LifecycleState,
   lifecycleStateFromOrdinal,
   lifecycleStateOrdinal,
@@ -87,7 +88,7 @@ function modelOf(value: unknown): unknown {
   if (typeof value === 'bigint') {
     return value >= minInt64 && value <= maxInt64 ? { integer: value.toString() } : { float: Number(value) };
   }
-  if (value instanceof Float64) {
+  if (value instanceof Float64 || value instanceof JsonNumber) {
     return { float: value.value };
   }
   if (Array.isArray(value)) {
@@ -753,9 +754,34 @@ test('数字按值模型读写', () => {
   assert.deepEqual([two, hundred], [new Float64(2), new Float64(100)]);
   assert.equal(half, 1.5);
   assert.equal(big, 9007199254740993n);
-  assert.equal(beyond, 2 ** 63, 'beyond 64 bits is a float');
-  assert.equal(infinity, Number.POSITIVE_INFINITY);
-  assert.deepEqual(tiny, new Float64(0));
+  // 换成数值再写出会变的数字保留原文：值模型里是浮点
+  assert.deepEqual(beyond, new JsonNumber('9223372036854775808'), 'beyond 64 bits is a float with its text');
+  assert.equal(Number(beyond), 2 ** 63);
+  assert.deepEqual(infinity, new JsonNumber('1e400'));
+  assert.equal(Number(infinity), Number.POSITIVE_INFINITY);
+  assert.deepEqual(tiny, new JsonNumber('1e-400'));
+  assert.equal(Number(tiny), 0);
+  assert.equal(writeJson(read.root), '[1,0,-0.0,2.0,100.0,1.5,9007199254740993,9223372036854775808,1e400,1e-400]');
+  // 有效数字比双精度多的保留原文，能往返的照常读成数值
+  const precise = readJsonText(
+    '[0.1000000000000000000001,0.30000000000000004,1E+17,100000000000000000.0,123456789012345678901234567890]',
+  );
+  assert.ok(precise.ok);
+  assert.deepEqual(precise.root, [
+    new JsonNumber('0.1000000000000000000001'),
+    0.30000000000000004,
+    1e17,
+    1e17,
+    new JsonNumber('123456789012345678901234567890'),
+  ]);
+  assert.equal(formatMessage('{v} {v:F2}', { v: new JsonNumber('1e400') }), 'Infinity Infinity');
+  assert.equal(formatMessage('{v}', { v: [new JsonNumber('9223372036854775808')] }), '[9.223372036854776E+18]');
+  assert.throws(() => new JsonNumber('01'), FrameworkError);
+  // 类型化的值写不出非有限的浮点（RFC-0011 规则 2），JsonNumber 照原文
+  assert.throws(() => writeJson({ ratio: Number.NaN }, { nonFinite: 'reject' }), TypeError);
+  assert.throws(() => writeJson([new Float64(Number.POSITIVE_INFINITY)], { nonFinite: 'reject' }), TypeError);
+  assert.equal(writeJson([new JsonNumber('1e400')], { nonFinite: 'reject' }), '[1e400]');
+  assert.throws(() => writeJson(undefined), TypeError);
   assert.equal(
     writeJson([1, -0, 2, new Float64(2), 1e16, 1e17, 0.1, 2n ** 63n, -(2n ** 63n), Number.NaN, -Infinity]),
     '[1,-0.0,2,2.0,10000000000000000.0,1E+17,0.1,9.223372036854776E+18,-9223372036854775808,"NaN","-Infinity"]',

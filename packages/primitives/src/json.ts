@@ -45,14 +45,66 @@ export class Float64 {
   }
 }
 
+/** 数字的文法（RFC 8259），整串匹配 */
+const numberTextPattern = /^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?$/;
+
+/**
+ * 保留原文的 JSON 数字（RFC-0011 规则 2，ADR-0236）
+ *
+ * @remarks
+ * 读到的数字换成 `number`、`bigint` 或 {@link Float64} 再写出时，十进制值与原文不同的（上溢为无穷的 `1e400`、下溢为 0 的 `1e-400`、
+ * 超出 64 位的整数、比双精度更多的有效数字），读取器保留原文：值模型里它是双精度浮点 {@link JsonNumber.value}，
+ * 写出时照原文，任意 JSON 的成员写回时与读到的 JSON 值相等。`valueOf` 返回数值
+ */
+export class JsonNumber {
+  /** 原文，符合 RFC 8259 的数字文法 */
+  readonly text: string;
+
+  /**
+   * @param text - 数字的原文
+   */
+  constructor(text: string) {
+    if (typeof text !== 'string' || !numberTextPattern.test(text)) {
+      throw new FrameworkError(ErrorCode.InvalidArgument, 'A JsonNumber needs the text of a JSON number.');
+    }
+    this.text = text;
+    Object.freeze(this);
+  }
+
+  /** 最接近原文的双精度浮点；超出范围时是无穷或 0 */
+  get value(): number {
+    return Number(this.text);
+  }
+
+  /** 数值，让 `Number(v)` 与算术可用 */
+  valueOf(): number {
+    return this.value;
+  }
+
+  /** 原文 */
+  toString(): string {
+    return this.text;
+  }
+
+  /**
+   * `JSON.stringify` 写出数值
+   *
+   * @remarks
+   * 会失去原文，无穷还会写成 `null`；线上编码用 {@link writeJson}
+   */
+  toJSON(): number {
+    return this.value;
+  }
+}
+
 /**
  * JSON 可表示的标量
  *
  * @remarks
  * 数字按值模型（RFC-0010「模板」）：安全整数的 `number` 与 64 位范围内的 `bigint` 是整数，其余 `number`、
- * 超出 64 位的 `bigint` 与 {@link Float64} 是双精度浮点
+ * 超出 64 位的 `bigint`、{@link Float64} 与 {@link JsonNumber} 是双精度浮点
  */
-export type JsonPrimitive = string | number | bigint | Float64 | boolean | null;
+export type JsonPrimitive = string | number | bigint | Float64 | JsonNumber | boolean | null;
 
 /**
  * JSON 可表示的值
@@ -156,7 +208,7 @@ export function defineMember(target: object, name: string, value: unknown): void
  * 深拷贝并冻结一个 JSON 对象，对象的键按码元升序排列；不是 JSON 可表示的值抛出 {@link FrameworkError}
  *
  * @remarks
- * 键排序让线上编码确定，与 Go SDK 编码 `map[string]any` 时按键排序一致。数字按值模型保留：`bigint` 与 {@link Float64} 原样，
+ * 键排序让线上编码确定，与 Go SDK 编码 `map[string]any` 时按键排序一致。数字按值模型保留：`bigint`、{@link Float64} 与 {@link JsonNumber} 原样，
  * 非有限的浮点也可以放进细节，线上写成字符串 `NaN`、`Infinity`、`-Infinity`（RFC-0001「Result」，ADR-0236）
  *
  * @param value - 要拷贝的值；{@link JsonMembers} 转成普通对象
@@ -184,7 +236,7 @@ function freezeJson(value: unknown, path: string, ancestors: Set<object>): JsonV
     default:
       throw notJson(path);
   }
-  if (value === null || value instanceof Float64) {
+  if (value === null || value instanceof Float64 || value instanceof JsonNumber) {
     return value;
   }
   if (ancestors.has(value)) {

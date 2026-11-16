@@ -1,6 +1,4 @@
-import { ErrorCode } from './error-code.ts';
-import { FrameworkError } from './framework.ts';
-import { Float64, isIntegerNumber, JsonMembers, maxInt64, minInt64 } from './json.ts';
+import { Float64, isIntegerNumber, JsonMembers, JsonNumber, maxInt64, minInt64 } from './json.ts';
 
 /** 控制字符的短写 */
 const shortEscapes: Readonly<Record<number, string>> = Object.freeze({
@@ -88,20 +86,30 @@ export function floatText(value: number): string {
  * 不同的是数字按值模型写，让对方读回同一个值（ADR-0236）：
  * - 整数（安全整数的 `number`、64 位范围内的 `bigint`）写十进制。
  * - 浮点按文本形式写，整数值的浮点补上 `.0`（`2.0`、`-0.0`、`1E+17` 原样），否则对方读成整数；
- *   非有限的浮点写成字符串 `"NaN"`、`"Infinity"`、`"-Infinity"`。
- * - {@link JsonMembers} 按文档顺序写成员。字符串按 {@link quoteJsonString} 转义。
+ *   非有限的浮点按 `options.nonFinite`：缺省写成字符串 `"NaN"`、`"Infinity"`、`"-Infinity"`（无类型的值，如错误细节），
+ *   `reject` 时写不出（类型化的值，如操作的响应：不写成 `null` 或字符串，RFC-0011 规则 2）。
+ * - {@link JsonNumber} 照原文写。{@link JsonMembers} 按文档顺序写成员。字符串按 {@link quoteJsonString} 转义。
  *
- * @throws {@link FrameworkError} 值没有 JSON 表示（顶层是 `undefined`、函数或 symbol）或有循环引用时，码为 `PRIMITIVES_VALIDATION_001`
+ * @throws TypeError 与 `JSON.stringify` 一样，值没有 JSON 表示（顶层是 `undefined`、函数或 symbol）、有循环引用，
+ * 或 `nonFinite` 为 `reject` 时遇到非有限的浮点
  */
-export function writeJson(value: unknown): string {
-  const text = writeValue(value, new Set());
+export function writeJson(value: unknown, options?: JsonWriteOptions): string {
+  const text = writeValue(value, new Set(), options?.nonFinite === 'reject');
   if (text === undefined) {
-    throw new FrameworkError(ErrorCode.InvalidArgument, 'The value has no JSON representation.');
+    throw new TypeError('The value has no JSON representation.');
   }
   return text;
 }
 
-function writeValue(input: unknown, ancestors: Set<object>): string | undefined {
+/**
+ * {@link writeJson} 的选项
+ */
+export interface JsonWriteOptions {
+  /** 非有限的浮点：`string` 写成字符串（缺省），`reject` 写不出 */
+  readonly nonFinite?: 'string' | 'reject';
+}
+
+function writeValue(input: unknown, ancestors: Set<object>, reject: boolean): string | undefined {
   let value = input;
   // 与 JSON.stringify 一样先调用 toJSON；Maybe 这类包装的 toJSON 返回的值可能还有 toJSON，接着调用，直到得到普通值
   for (let rounds = 0; rounds < 8 && hasToJSON(value); rounds += 1) {
@@ -117,9 +125,9 @@ function writeValue(input: unknown, ancestors: Set<object>): string | undefined 
     case 'boolean':
       return value ? 'true' : 'false';
     case 'number':
-      return isIntegerNumber(value) ? String(value) : floatWire(value);
+      return isIntegerNumber(value) ? String(value) : floatWire(value, reject);
     case 'bigint':
-      return value >= minInt64 && value <= maxInt64 ? value.toString() : floatWire(Number(value));
+      return value >= minInt64 && value <= maxInt64 ? value.toString() : floatWire(Number(value), reject);
     case 'object':
       break;
     default:
@@ -129,20 +137,23 @@ function writeValue(input: unknown, ancestors: Set<object>): string | undefined 
     return 'null';
   }
   if (value instanceof Float64) {
-    return floatWire(value.value);
+    return floatWire(value.value, reject);
+  }
+  if (value instanceof JsonNumber) {
+    return value.text;
   }
   if (ancestors.has(value)) {
-    throw new FrameworkError(ErrorCode.InvalidArgument, 'The value contains a circular reference.');
+    throw new TypeError('The value contains a circular reference.');
   }
   ancestors.add(value);
   try {
     if (Array.isArray(value)) {
-      return `[${value.map((item: unknown) => writeValue(item, ancestors) ?? 'null').join(',')}]`;
+      return `[${value.map((item: unknown) => writeValue(item, ancestors, reject) ?? 'null').join(',')}]`;
     }
     const entries = value instanceof JsonMembers ? value.entries : Object.entries(value);
     const members: string[] = [];
     for (const [name, member] of entries) {
-      const text = writeValue(member, ancestors);
+      const text = writeValue(member, ancestors, reject);
       if (text !== undefined) {
         members.push(`${quoteJsonString(name)}:${text}`);
       }
@@ -158,14 +169,18 @@ function hasToJSON(value: unknown): value is { toJSON(): unknown } {
     typeof value === 'object' &&
     value !== null &&
     !(value instanceof Float64) &&
+    !(value instanceof JsonNumber) &&
     typeof (value as { toJSON?: unknown }).toJSON === 'function'
   );
 }
 
-/** 浮点的线上写法：非有限值写成字符串，整数值补上 `.0` */
-function floatWire(value: number): string {
+/** 浮点的线上写法：非有限值写成字符串或写不出，整数值补上 `.0` */
+function floatWire(value: number, reject: boolean): string {
   const text = floatText(value);
   if (!Number.isFinite(value)) {
+    if (reject) {
+      throw new TypeError(`The number ${text} has no JSON representation.`);
+    }
     return `"${text}"`;
   }
   return /[.E]/.test(text) ? text : `${text}.0`;

@@ -6,11 +6,13 @@ import {
   isIntegerNumber,
   JsonMembers,
   type JsonNode,
+  JsonNumber,
   type JsonValue,
   maxInt64,
   minInt64,
 } from './json.ts';
 import { JsonPath } from './json-path.ts';
+import { floatText } from './json-writer.ts';
 
 /**
  * JSON 文本的嵌套上限：最外层的对象或数组是第 1 层（RFC-0001「JSON 文本」）
@@ -48,6 +50,30 @@ const numberPattern = /-?(?:0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?/y;
 
 const hexPattern = /^[0-9A-Fa-f]{4}$/;
 
+/** 数字文本的各部分：符号、整数部分、小数部分与指数 */
+const decimalPattern = /^(-?)([0-9]+)(?:\.([0-9]+))?(?:[eE]([+-]?[0-9]+))?$/;
+
+/**
+ * 数字文本的十进制值，写成可比较的规范形式：符号、去掉首尾零的有效数字与十的幂，零只保留符号
+ *
+ * @remarks
+ * `2.0` 与 `2`、`1e2` 与 `100` 的规范形式相同；指数用 bigint，`1e99999999999999999999` 也不溢出
+ */
+function decimalKey(text: string): string {
+  const match = decimalPattern.exec(text);
+  if (match === null) {
+    return text;
+  }
+  const [, sign = '', integer = '', fraction = '', exponent = '0'] = match;
+  const digits = `${integer}${fraction}`.replace(/^0+/, '');
+  if (digits === '') {
+    return `${sign}0`;
+  }
+  const significant = digits.replace(/0+$/, '');
+  const scale = BigInt(exponent) - BigInt(fraction.length) + BigInt(digits.length - significant.length);
+  return `${sign}${significant}e${scale}`;
+}
+
 /**
  * 读取 JSON 文本并做共同的读取检查（RFC-0001「JSON 文本」，ADR-0236）
  *
@@ -60,7 +86,9 @@ const hexPattern = /^[0-9A-Fa-f]{4}$/;
  * - 语法错误不论在哪里都优先于重复成员。
  *
  * 数字按值模型读：整数写法（没有小数点与指数）且在 64 位范围内是整数，安全整数是 `number`、其余是 `bigint`，`-0` 是整数 0；
- * 其余是双精度浮点，值恰好是安全整数（`2.0`、`1e2`）时是 {@link Float64}，否则是 `number`，`-0.0` 是负零，上溢为无穷、下溢为 0
+ * 其余是双精度浮点，值恰好是安全整数（`2.0`、`1e2`）时是 {@link Float64}，否则是 `number`，`-0.0` 是负零。
+ * 换成数值再写出时十进制值与原文不同的（`1e400`、`1e-400`、超出 64 位的整数、比双精度更多的有效数字）是保留原文的 {@link JsonNumber}，
+ * 值模型里它是浮点，上溢为无穷、下溢为 0
  *
  * @param input - JSON 文本，或它的 UTF-8 字节
  */
@@ -259,7 +287,7 @@ class Reader {
     return value;
   }
 
-  number(): number | bigint | Float64 {
+  number(): number | bigint | Float64 | JsonNumber {
     numberPattern.lastIndex = this.index;
     const match = numberPattern.exec(this.text);
     if (match === null) {
@@ -276,6 +304,10 @@ class Reader {
       }
     }
     const value = Number(digits);
+    // 写回时与原文的十进制值不同就保留原文（RFC-0011 规则 2：任意 JSON 的成员写回时 JSON 值相等）
+    if (!Number.isFinite(value) || decimalKey(floatText(value)) !== decimalKey(digits)) {
+      return new JsonNumber(digits);
+    }
     return isIntegerNumber(value) ? new Float64(value) : value;
   }
 

@@ -6,6 +6,7 @@ import {
   isIntegerNumber,
   JsonMembers,
   type JsonNode,
+  JsonNumber,
   JsonPath,
   type JsonValue,
   toJsonValue,
@@ -236,9 +237,10 @@ const int32Shape = new ScalarShape<number>(
 // 读出的 bigint 节点都在 64 位范围内，超出的整数写法已经读成浮点
 const int64Shape = new ScalarShape<bigint>(isIntegerNode, false, (node) => BigInt(node as number | bigint));
 const float64Shape = new ScalarShape<number>(
-  (node) => typeof node === 'number' || typeof node === 'bigint' || node instanceof Float64,
+  (node) =>
+    typeof node === 'number' || typeof node === 'bigint' || node instanceof Float64 || node instanceof JsonNumber,
   false,
-  (node) => (node instanceof Float64 ? node.value : Number(node as number | bigint)),
+  (node) => (node instanceof Float64 || node instanceof JsonNumber ? node.value : Number(node as number | bigint)),
 );
 const jsonShape = new ScalarShape<JsonValue>(() => true, true, toJsonValue);
 

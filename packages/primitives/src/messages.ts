@@ -1,6 +1,6 @@
 import { ErrorCode } from './error-code.ts';
 import { FrameworkError } from './framework.ts';
-import { Float64, isIntegerNumber, isPlainObject, JsonMembers, maxInt64, minInt64 } from './json.ts';
+import { Float64, isIntegerNumber, isPlainObject, JsonMembers, JsonNumber, maxInt64, minInt64 } from './json.ts';
 import { floatText, quoteJsonString } from './json-writer.ts';
 
 /**
@@ -237,7 +237,7 @@ const nullValue: ModelValue = Object.freeze({ kind: 'null' });
  *
  * @remarks
  * - `null` 与 `undefined` 是空；安全整数的 `number`（负零除外）与 64 位范围内的 `bigint` 是整数，
- *   其余 `number`、超出 64 位的 `bigint` 与 {@link Float64} 是浮点。
+ *   其余 `number`、超出 64 位的 `bigint`、{@link Float64} 与 {@link JsonNumber} 是浮点。
  * - 数组、类型化数组、`Set` 与其他可迭代对象是数组；普通对象、{@link JsonMembers} 与 `Map` 是对象，`Map` 的键按文本形式写成名字。
  * - `Date` 写 `toISOString()`（无效日期写 `Invalid Date`），其余（类实例、symbol、函数）写 `String(value)`
  */
@@ -263,7 +263,7 @@ function modelOf(value: unknown): ModelValue {
   if (value === null) {
     return nullValue;
   }
-  if (value instanceof Float64) {
+  if (value instanceof Float64 || value instanceof JsonNumber) {
     return { kind: 'float', value: value.value };
   }
   if (value instanceof JsonMembers) {
