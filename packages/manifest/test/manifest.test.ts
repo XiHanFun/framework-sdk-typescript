@@ -136,7 +136,7 @@ test('读取插件清单', () => {
 
 test('缺省值与访问器', () => {
   const manifest = readManifest(
-    '{"id":"xihan.a.b","version":"1.0.0","primitives":"1","stability":"stable","kind":"provider","role":"default","bindings":[{"name":"db","type":"connection:relational"},{"name":"cache","type":"cache:distributed","required":false}],"activation":[]}',
+    '{"id":"xihan.a.b","version":"1.0.0","primitives":"1","stability":"stable","kind":"provider","role":"default","bindings":[{"name":"db","type":"connection:relational"},{"name":"cache","type":"cache:distributed","required":false}]}',
   );
   assert.equal(effectiveRole(manifest), ManifestRole.Default);
   assert.deepEqual([...effectiveActivation(manifest)], ['onStartup']);
@@ -369,5 +369,34 @@ test('从文件读取清单', async (t) => {
     assert.equal(error.code, ErrorCode.InvalidArgument);
     assert.equal(error.message, 'The manifest file could not be read.');
     return true;
+  });
+});
+
+test('清单的读取遵循 manifests.json', () => {
+  const url = new URL('../../../spec/conformance/vectors/manifest/manifests.json', import.meta.url);
+  const vectors = JSON.parse(readFileSync(url, 'utf8')) as {
+    valid: { name: string; manifest: unknown }[];
+    invalid: { name: string; manifest?: unknown; text?: string }[];
+  };
+  for (const c of vectors.valid) {
+    const manifest = readManifest(JSON.stringify(c.manifest));
+    // 写出的清单再读一遍得到同一份清单（RFC-0002 解析规则 2）
+    assert.deepEqual(readManifest(writeManifest(manifest)), manifest, c.name);
+  }
+  for (const c of vectors.invalid) {
+    const text = c.text ?? JSON.stringify(c.manifest);
+    assert.ok(rejection(text), `${c.name} must be rejected`);
+  }
+  // 程序里构造的清单同样不得有空的 activation
+  const empty: Manifest = {
+    id: 'xihan.a.b',
+    version: '1.0.0',
+    primitives: 1,
+    stability: Stability.Stable,
+    kind: ManifestKind.Capability,
+    activation: [],
+  };
+  assert.throws(() => writeManifest(empty), {
+    message: "The activation of 'xihan.a.b' must list at least one event; leave it out for the default onStartup.",
   });
 });

@@ -5,6 +5,7 @@ import {
   isPlainObject,
   isStability,
   type PipelineStage,
+  parseJson,
   type Stability,
 } from '@xihan-framework/primitives';
 
@@ -200,7 +201,8 @@ export function readManifest(json: string | Uint8Array): Manifest {
   let manifest: Manifest;
   try {
     const text = typeof json === 'string' ? json : new TextDecoder('utf-8', { fatal: true }).decode(json);
-    manifest = decodeManifest(JSON.parse(text));
+    // parseJson 另查同一层的重复成员名：JSON.parse 会悄悄取最后一个（RFC-0002 解析规则 2）
+    manifest = decodeManifest(parseJson(text));
   } catch (cause) {
     throw new FrameworkError(ErrorCode.InvalidArgument, 'The manifest is not valid JSON for the schema.', { cause });
   }
@@ -232,7 +234,7 @@ export function effectiveRole(manifest: Manifest): ManifestRole {
  * 返回激活事件，缺省为 `["onStartup"]`
  */
 export function effectiveActivation(manifest: Manifest): readonly string[] {
-  return manifest.activation === undefined || manifest.activation.length === 0 ? startupOnly : manifest.activation;
+  return manifest.activation ?? startupOnly;
 }
 
 /**
@@ -342,6 +344,10 @@ export function validateManifest(manifest: Manifest): void {
       throw invalid(`'${id}' declares the binding '${binding.name}' more than once.`);
     }
     bound.add(binding.name);
+  }
+  // 激活事件至少一项：空数组不合法，缺省（不写）才是 onStartup（RFC-0002 解析规则 2，ADR-0235）
+  if (manifest.activation !== undefined && manifest.activation.length === 0) {
+    throw invalid(`The activation of '${id}' must list at least one event; leave it out for the default onStartup.`);
   }
   for (const event of manifest.activation ?? []) {
     if (!activationPattern.test(event)) {
