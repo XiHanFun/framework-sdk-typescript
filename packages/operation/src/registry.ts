@@ -1,4 +1,4 @@
-import type { InvocationContext } from '@xihan-framework/invocation';
+import { type InvocationContext, InvocationMessageKey } from '@xihan-framework/invocation';
 import { AppOwner } from '@xihan-framework/pipeline';
 import {
   ErrorCode,
@@ -8,6 +8,7 @@ import {
   JsonPath,
   Result,
   readJsonText,
+  writeJson,
 } from '@xihan-framework/primitives';
 
 import { checkContract, type OperationContract, OperationErrorCode, OperationMessageKey } from './contract.ts';
@@ -108,7 +109,7 @@ export class OperationDescriptor {
     if (!result.ok) {
       return { outcome: result.toVoid(), payload: undefined };
     }
-    const encoded = encodeResponse(this.contract.id, result.value);
+    const encoded = encodeResponse(result.value);
     return encoded.ok
       ? { outcome: Result.success(), payload: encoded.value }
       : { outcome: encoded.toVoid(), payload: undefined };
@@ -264,20 +265,19 @@ function invalidPayload(id: string, reason: string): Result<never> {
  *
  * @internal
  */
-export function encodeResponse(id: string, value: unknown): Result<string> {
-  let reason: string;
+export function encodeResponse(value: unknown): Result<string> {
   try {
-    const json = JSON.stringify(value);
-    if (json !== undefined) {
-      return Result.ok(json);
-    }
-    reason = 'the value has no JSON representation';
+    return Result.ok(writeJson(value, { nonFinite: 'reject' }));
   } catch (error) {
-    reason = error instanceof Error ? error.message : String(error);
+    return Result.fail(
+      ErrorInfo.unexpected(
+        OperationErrorCode.Unexpected,
+        InvocationMessageKey.UnhandledException,
+        undefined,
+        error instanceof FrameworkError ? error.toErrorInfo() : undefined,
+      ),
+    );
   }
-  return Result.fail(
-    ErrorInfo.literal('KERNEL_UNEXPECTED_001', `The response of '${id}' could not be encoded: ${reason}`),
-  );
 }
 
 function checkSchema(id: string, part: 'request' | 'response', schema: string): void {

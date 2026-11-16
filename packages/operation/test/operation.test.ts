@@ -10,7 +10,7 @@ import {
   findDecodedRequest,
   findOperation,
   findOperationRequest,
-  findOperationResponsePayload,
+  findOperationResponse,
   isOperationId,
   KernelOwner,
   type OperationContract,
@@ -31,6 +31,7 @@ import {
   FrameworkError,
   formatMessage,
   isPlainObject,
+  JsonNumber,
   JsonPath,
   PipelineStage,
   Result,
@@ -98,7 +99,7 @@ test('调用经过完整管道并编码响应', async () => {
   assert.ok(response.outcome.ok);
   assert.equal(response.payload, '{"id":"o-c1","quantity":2}');
   assert.equal(seen, 'orders.create');
-  assert.equal(findOperationResponsePayload(context), '{"id":"o-c1","quantity":2}');
+  assert.deepEqual(findOperationResponse(context), { id: 'o-c1', quantity: 2 });
 
   const failed = await invoker.invoke(InvocationContext.create(), { id: 'orders.create', payload: '{"quantity":0}' });
   assert.equal(codeOf(failed.outcome), 'ORDERS_VALIDATION_001');
@@ -183,7 +184,7 @@ test('同一个上下文上先后的调用互不串用终点与载荷', async ()
   assert.equal(response.payload, '{"id":"o-","quantity":6}');
   const failed = await invoker.invoke(context, { id: 'orders.create', payload: '{"quantity":0}' });
   assert.equal(failed.payload, undefined);
-  assert.equal(findOperationResponsePayload(context), undefined);
+  assert.equal(findOperationResponse(context), undefined);
 });
 
 test('中间件的短路与派生上下文', async () => {
@@ -244,16 +245,78 @@ test('中间件的短路与派生上下文', async () => {
   throwsCode(() => newInvoker(cyclic), PipelineErrorCode.Cycle);
 });
 
-test('响应无法编码为 JSON 时是 KERNEL_UNEXPECTED_001', async () => {
+test('管道结束之后才编码响应：数字按值模型写，写不出时是 unhandled_exception', async () => {
   const registry = new OperationRegistry();
-  const contract = defineContract<Record<string, never>, { big: bigint }>({ id: 'numbers.get', expose: [] });
-  registry.add({ contract, request: RequestShape.object({}), handler: async () => Result.ok({ big: 1n }) });
+  const contract = defineContract<{ readonly mode?: string | null }, unknown>({ id: 'numbers.get', expose: [] });
+  registry.add({
+    contract,
+    request: RequestShape.object({ mode: RequestShape.string() }),
+    handler: async (_context, request) => {
+      switch (request.mode) {
+        case 'nan':
+          return Result.ok({ ratio: Number.NaN });
+        case 'infinity':
+          return Result.ok([new Float64(Number.NEGATIVE_INFINITY)]);
+        case 'cycle': {
+          const cycle: Record<string, unknown> = {};
+          cycle.self = cycle;
+          return Result.ok(cycle);
+        }
+        case 'framework':
+          return Result.ok({
+            toJSON: () => {
+              throw new FrameworkError('NUMBERS_VALIDATION_001', 'The response cannot be written.');
+            },
+          });
+        default:
+          return Result.ok({ big: 9007199254740993n, two: new Float64(2), raw: new JsonNumber('1e400'), n: 2 });
+      }
+    },
+  });
+  // Egress 阶段的中间件看到的是编码之前的响应对象，载荷还没有写出
+  const seen: unknown[] = [];
+  const invoker = new OperationInvoker(
+    registry,
+    new PipelineBuilder().useAt(
+      middleware('Inspect', async (context, next) => {
+        const outcome = await next(context);
+        seen.push(findOperationResponse(context));
+        return outcome;
+      }),
+      PipelineStage.Egress,
+    ),
+  );
+  const invoke = (mode?: string) =>
+    invoker.invoke(InvocationContext.create(), {
+      id: 'numbers.get',
+      payload: mode === undefined ? '{}' : JSON.stringify({ mode }),
+    });
+  const written = await invoke();
+  assert.ok(written.outcome.ok);
+  assert.equal(written.payload, '{"big":9007199254740993,"two":2.0,"raw":1e400,"n":2}');
+  assert.ok(seen.at(-1) !== undefined && typeof (seen.at(-1) as { big: unknown }).big === 'bigint');
+  for (const mode of ['nan', 'infinity', 'cycle']) {
+    const failed = await invoke(mode);
+    assert.ok(!failed.outcome.ok, mode);
+    assert.equal(failed.outcome.error.code, OperationErrorCode.Unexpected, mode);
+    assert.equal(failed.outcome.error.messageKey, InvocationMessageKey.UnhandledException, mode);
+    assert.equal(failed.outcome.error.inner, undefined, `${mode}: a serialization failure is not a framework error`);
+    assert.equal(failed.payload, undefined, mode);
+  }
+  assert.ok(Number.isNaN((seen[1] as { ratio: number }).ratio), 'the middleware saw the response before encoding');
+  const framework = await invoke('framework');
+  assert.ok(!framework.outcome.ok);
+  assert.equal(framework.outcome.error.inner?.code, 'NUMBERS_VALIDATION_001', 'a FrameworkError rides along as inner');
+  // 类型化调用不编码：NaN 照常交给调用方
+  const typed = await invoker.invokeTyped(InvocationContext.create(), contract, { mode: 'nan' });
+  assert.ok(typed.ok && Number.isNaN((typed.value as { ratio: number }).ratio));
+  // 不经管道执行时同样
   const descriptor = registry.find('numbers.get');
   assert.ok(descriptor);
-  const response = await descriptor.execute(InvocationContext.create());
-  assert.ok(!response.outcome.ok);
-  assert.equal(response.outcome.error.code, 'KERNEL_UNEXPECTED_001');
-  assert.match(response.outcome.error.message, /^The response of 'numbers\.get' could not be encoded: /);
+  const direct = await descriptor.execute(InvocationContext.create(), '{"mode":"nan"}');
+  assert.ok(!direct.outcome.ok);
+  assert.equal(direct.outcome.error.messageKey, InvocationMessageKey.UnhandledException);
+  assert.equal(direct.payload, undefined);
 });
 
 test('登记表拒绝重复、不合法的 ID 与契约', () => {

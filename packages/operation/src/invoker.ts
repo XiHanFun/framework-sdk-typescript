@@ -19,11 +19,11 @@ import {
   type OperationResponse,
 } from './registry.ts';
 
-/** 对象袋里的键：当前操作、XGI 请求、解码好的请求、成功的响应载荷与这次调用的终点 */
+/** 对象袋里的键：当前操作、XGI 请求、解码好的请求、成功的响应对象与这次调用的终点 */
 const descriptorKey = new ItemKey<OperationDescriptor>('operation.descriptor');
 const requestKey = new ItemKey<OperationRequest>('operation.request');
 const decodedKey = new ItemKey<{ readonly value: unknown }>('operation.decoded-request');
-const responseKey = new ItemKey<string>('operation.response-payload');
+const responseKey = new ItemKey<{ readonly value: unknown }>('operation.response');
 const terminalKey = new ItemKey<Step>('operation.terminal');
 
 /**
@@ -65,10 +65,13 @@ export function findDecodedRequest(context: InvocationContext): unknown {
 }
 
 /**
- * 返回 handle 阶段写回的响应载荷；调用成功之前或失败时为 `undefined`
+ * 返回处理器成功产出的响应对象（RFC-0011 规则 3）；处理器执行之前或失败时为 `undefined`
+ *
+ * @remarks
+ * 中间件看到的是编码之前的结果：XGI 入口在管道结束之后才把它编码成载荷（RFC-0011 规则 10「编码」）
  */
-export function findOperationResponsePayload(context: InvocationContext): string | undefined {
-  return context.findItem(responseKey);
+export function findOperationResponse(context: InvocationContext): unknown {
+  return context.findItem(responseKey)?.value;
 }
 
 /**
@@ -112,7 +115,10 @@ export class OperationInvoker {
    *
    * @remarks
    * 进入管道前只核对未登记（`KERNEL_NOTFOUND_001`）；截止时间、解码与异常翻译在管道里的内置步骤上（见类的说明）。
-   * 管道以成功结束却没有响应（中间件以成功短路）返回 `KERNEL_UNEXPECTED_001` + `kernel.operation.no_response`（RFC-0011 规则 9）
+   * 管道以成功结束却没有响应（中间件以成功短路）返回 `KERNEL_UNEXPECTED_001` + `kernel.operation.no_response`（RFC-0011 规则 9）。
+   * 管道结束之后才把响应编码成载荷（RFC-0011 规则 10「编码」）：数字按值模型写，非有限的浮点写不出；写不出时以
+   * `KERNEL_UNEXPECTED_001` + `kernel.invocation.unhandled_exception` 结束，异常是 FrameworkError 时它的错误放进 `inner`，
+   * 不抛给调用方，没有载荷
    *
    * @throws 排在 Observe 内置步骤之前的中间件抛出的异常原样传出
    */
@@ -128,23 +134,21 @@ export class OperationInvoker {
         throw foreignContext();
       }
       const result = await handler(current, decoded.value);
-      if (!result.ok) {
-        return result.toVoid();
+      if (result.ok) {
+        current.setItem(responseKey, { value: result.value });
       }
-      const encoded = encodeResponse(descriptor.contract.id, result.value);
-      if (encoded.ok) {
-        current.setItem(responseKey, encoded.value);
-      }
-      return encoded.toVoid();
+      return result.toVoid();
     });
     const outcome = await this.#step(context);
     if (!outcome.ok) {
       return { outcome, payload: undefined };
     }
-    const payload = context.findItem(responseKey);
-    return payload === undefined
-      ? { outcome: Result.fail(noResponse(request.id)), payload: undefined }
-      : { outcome, payload };
+    const response = context.findItem(responseKey);
+    if (response === undefined) {
+      return { outcome: Result.fail(noResponse(request.id)), payload: undefined };
+    }
+    const encoded = encodeResponse(response.value);
+    return encoded.ok ? { outcome, payload: encoded.value } : { outcome: encoded.toVoid(), payload: undefined };
   }
 
   /**
@@ -179,6 +183,9 @@ export class OperationInvoker {
         throw foreignContext();
       }
       result = (await handler(current, decoded.value)) as Result<Res>;
+      if (result.ok) {
+        current.setItem(responseKey, { value: result.value });
+      }
       return result.toVoid();
     });
     const outcome = await this.#step(context);
@@ -198,7 +205,7 @@ function noResponse(id: string): ErrorInfo {
  * 进管道前把这次调用的描述、请求、类型化的请求与终点写进对象袋
  *
  * @remarks
- * 每次调用都重写终点并清掉上一次的解码结果与响应载荷：同一个上下文上先后的调用不会用到上一次的终点或载荷
+ * 每次调用都重写终点并清掉上一次的解码结果与响应：同一个上下文上先后的调用不会用到上一次的终点或响应
  */
 function enter(
   context: InvocationContext,

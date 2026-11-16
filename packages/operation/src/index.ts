@@ -21,7 +21,7 @@ export {
   findDecodedRequest,
   findOperation,
   findOperationRequest,
-  findOperationResponsePayload,
+  findOperationResponse,
   KernelOwner,
   OperationInvoker,
 } from './invoker.ts';
