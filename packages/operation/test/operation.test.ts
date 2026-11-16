@@ -344,6 +344,7 @@ test('操作错误的码、键与参数与内核错误向量一致', async () =>
     [OperationErrorCode.Unexpected, OperationMessageKey.NoResponse],
     [OperationErrorCode.Duplicate, OperationMessageKey.Duplicate],
     [OperationErrorCode.RegistryFull, OperationMessageKey.RegistryFull],
+    [OperationErrorCode.Unexpected, InvocationMessageKey.UnhandledException],
   ];
   for (const [code, key] of pairs) {
     assert.equal(entry(key).code, code, key);
@@ -402,6 +403,7 @@ test('抛出的异常翻译为失败：未处理的是 KERNEL_UNEXPECTED_001，�
   assert.equal(plain.outcome.error.messageKey, InvocationMessageKey.UnhandledException);
   assert.equal(plain.outcome.error.message, 'An unhandled exception occurred during the invocation.');
   assert.equal(plain.outcome.error.inner, undefined, 'the exception message stays off the wire');
+  assert.equal(plain.outcome.error.details, undefined, 'the unhandled exception error takes no arguments');
   assert.ok(!JSON.stringify(plain.outcome).includes('secret'));
 
   const framework = await invoker.invokeTyped(InvocationContext.create(), contract, { mode: 'framework' });
