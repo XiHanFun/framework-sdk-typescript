@@ -123,7 +123,9 @@ test('拒绝成环与不合法的约束', () => {
     codeOf(() => cycle.describe()),
     PipelineErrorCode.Cycle,
   );
-  assert.throws(() => cycle.dump(), { message: "The ordering constraints in stage 'validate' form a cycle." });
+  assert.throws(() => cycle.dump(), {
+    message: "Middleware ordering constraints in stage 'validate' form a cycle: 'A', 'B'.",
+  });
 
   const unregistered = new PipelineBuilder().useAt(noop('A'), PipelineStage.Validate).before('A', 'Missing');
   assert.equal(
@@ -131,7 +133,7 @@ test('拒绝成环与不合法的约束', () => {
     PipelineErrorCode.Registration,
   );
   assert.throws(() => unregistered.describe(), {
-    message: "The ordering constraint references the unregistered middleware 'Missing'.",
+    message: "The ordering constraint of middleware 'A' references unregistered middleware 'Missing'.",
   });
 
   const crossStage = new PipelineBuilder()
@@ -191,28 +193,30 @@ test('登记时核对参数', () => {
   assert.equal(builder.describe().length, 0, 'rejected registrations are not kept');
 });
 
-test('命名实例彼此独立，但按类型的约束有歧义', () => {
+test('命名实例彼此独立，只按实例名指到', () => {
   const log: string[] = [];
   const builder = new PipelineBuilder()
     .useNamedInstance('guard-a', recording('Guard', log), PipelineStage.Observe, Placement.End, 'xihan.plugins.a')
     .useNamedInstance('guard-b', recording('Guard', log), PipelineStage.Observe, Placement.End, 'xihan.plugins.b');
   assert.equal(builder.dump(), 'observe      Guard[guard-a]\nobserve      Guard[guard-b]\n');
   assert.equal(builder.describe()[1]?.instance, 'guard-b');
-  // 主体按类型名有歧义：声明时就报
+  // 按名字登记的实例只按实例名指到，类型名指不到（RFC-0004 排序规则第 7 条）：主体在声明时就报
   builder.useAt(noop('Other'), PipelineStage.Observe);
-  assert.equal(
-    codeOf(() => builder.before('Guard', 'Other')),
-    PipelineErrorCode.Registration,
-  );
-  // 目标按类型名有歧义：排序时报
+  assert.throws(() => builder.before('Guard', 'Other'), {
+    message: "Middleware 'Guard' is not registered, so no ordering constraint can be declared for it.",
+  });
+  // 目标在排序时报
   builder.before('Other', 'Guard');
-  assert.equal(
-    codeOf(() => builder.describe()),
-    PipelineErrorCode.Registration,
-  );
+  assert.throws(() => builder.describe(), {
+    message: "The ordering constraint of middleware 'Other' references unregistered middleware 'Guard'.",
+  });
   const twice = new PipelineBuilder().useNamedInstance('guard-a', noop('Guard'), PipelineStage.Observe);
   assert.throws(() => twice.useNamedInstance('guard-a', noop('Guard'), PipelineStage.Observe), {
-    message: "The middleware 'Guard[guard-a]' is registered more than once.",
+    message: "Middleware 'Guard' named 'guard-a' is already registered; instance names must be unique within a type.",
+  });
+  assert.throws(() => new PipelineBuilder().use(noop('A')).use(noop('A')), {
+    message:
+      "Middleware 'A' is already registered; each middleware type may appear only once in a pipeline unless its instances are named.",
   });
 });
 
@@ -282,17 +286,19 @@ test('次序约束可以按实例名声明，主体在声明时必须已登记',
     PipelineErrorCode.Registration,
   );
   assert.throws(() => new PipelineBuilder().useAt(noop('A'), PipelineStage.Validate).after('Missing', 'A'), {
-    message: "The middleware 'Missing' must be registered before it declares an ordering constraint.",
+    message: "Middleware 'Missing' is not registered, so no ordering constraint can be declared for it.",
   });
 
-  // 只登记一次的类型按类型名也能指到，即使它是命名实例
+  // 只有一个命名实例的类型也只按实例名指到；同一类型可以另有一个没有名字的默认实例，按类型名指到它
   const single = new PipelineBuilder()
     .useNamedInstance('only', noop('Lonely'), PipelineStage.Validate)
+    .useAt(noop('Lonely'), PipelineStage.Validate)
     .useAt(noop('First'), PipelineStage.Validate)
-    .before('Lonely', 'First');
+    .before('only', 'First')
+    .after('Lonely', 'First');
   assert.deepEqual(
     single.describe().map((descriptor) => descriptor.display),
-    ['Lonely[only]', 'First'],
+    ['Lonely[only]', 'First', 'Lonely'],
   );
 
   // 同一个名字既是实例名又是另一个类型名：有歧义
@@ -303,8 +309,34 @@ test('次序约束可以按实例名声明，主体在声明时必须已登记',
     .before('Trace', 'Audit');
   assert.throws(() => clash.describe(), {
     message:
-      "The name 'Audit' refers to several middleware (Guard[Audit], Audit); ordering constraints by it are ambiguous.",
+      "The middleware name 'Audit' matches several registrations, so ordering constraints by name are ambiguous for it.",
   });
+  assert.throws(() => clash.after('Audit', 'Trace'), {
+    message:
+      "The middleware name 'Audit' matches several registrations, so ordering constraints by name are ambiguous for it.",
+  });
+
+  // 跨阶段与成环的消息列出中间件的打印名；成环时列出全部仍被卡住的，按基准次序
+  const crossing = new PipelineBuilder()
+    .useNamedInstance('a', noop('Guard'), PipelineStage.Validate)
+    .useAt(noop('B'), PipelineStage.Handle)
+    .before('a', 'B');
+  assert.throws(() => crossing.describe(), {
+    message:
+      "Middleware 'Guard[a]' (stage 'validate') and 'B' (stage 'handle') are not in the same stage, so no relative order can be declared between them.",
+  });
+  const stuck = new PipelineBuilder()
+    .useAt(noop('Free'), PipelineStage.Validate)
+    .useAt(noop('A'), PipelineStage.Validate)
+    .useNamedInstance('b', noop('Guard'), PipelineStage.Validate)
+    .useAt(noop('Waiting'), PipelineStage.Validate)
+    .before('A', 'b')
+    .before('b', 'A')
+    .after('Waiting', 'A');
+  assert.throws(() => stuck.describe(), {
+    message: "Middleware ordering constraints in stage 'validate' form a cycle: 'A', 'Guard[b]', 'Waiting'.",
+  });
+  assert.throws(() => parseStage('bogus'), { message: "Unknown pipeline stage 'bogus'." });
 });
 
 /** ordering.json 的一步：按名字登记一个实例，或一条按名字的约束 */
@@ -336,7 +368,17 @@ test('排序、打印与报错时机遵循 pipeline/ordering.json', () => {
   const url = new URL('../../../spec/conformance/vectors/pipeline/ordering.json', import.meta.url);
   const vectors = JSON.parse(readFileSync(url, 'utf8')) as {
     cases: { name: string; steps: OrderingStep[]; dump: string }[];
-    errors: { name: string; steps: OrderingStep[]; error: string; at: number | 'sort' }[];
+    errors: { name: string; steps: OrderingStep[]; error: string; at: number | 'sort'; message: string }[];
+  };
+  /** 报错的码与消息原文；{type} 换成按名字登记的实例用的类型名 */
+  const failureOf = (action: () => unknown): { code: string; message: string } | undefined => {
+    try {
+      action();
+      return undefined;
+    } catch (error) {
+      assert.ok(error instanceof FrameworkError, `expected a FrameworkError, got ${String(error)}`);
+      return { code: error.code, message: error.message };
+    }
   };
   for (const c of vectors.cases) {
     const builder = new PipelineBuilder();
@@ -347,12 +389,13 @@ test('排序、打印与报错时机遵循 pipeline/ordering.json', () => {
   }
   for (const c of vectors.errors) {
     const builder = new PipelineBuilder();
+    const expected = { code: c.error, message: c.message.replaceAll('{type}', vectorType) };
     // 期望在第 at 步报错的，前面各步都必须成功；at 为 sort 的，登记全部成功、在排序时报
     c.steps.forEach((step, index) => {
       if (index === c.at) {
-        assert.equal(
-          codeOf(() => apply(builder, step)),
-          c.error,
+        assert.deepEqual(
+          failureOf(() => apply(builder, step)),
+          expected,
           `${c.name} at step ${index}`,
         );
       } else if (c.at === 'sort' || index < c.at) {
@@ -365,7 +408,7 @@ test('排序、打印与报错时机遵循 pipeline/ordering.json', () => {
         () => builder.dump(),
         () => builder.build(async () => Result.success()),
       ]) {
-        assert.equal(codeOf(sort), c.error, `${c.name} when sorting`);
+        assert.deepEqual(failureOf(sort), expected, `${c.name} when sorting`);
       }
     }
   }

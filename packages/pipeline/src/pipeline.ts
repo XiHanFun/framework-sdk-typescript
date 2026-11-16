@@ -87,18 +87,21 @@ export interface MiddlewareDescriptor {
   readonly display: string;
 }
 
-/** 一次登记 */
+/**
+ * 一次登记
+ *
+ * @remarks
+ * 顺序约束记在主体的登记上（与 .NET 一样），目标是中间件名，排序时才解析
+ */
 interface Registration {
   readonly middleware: Middleware;
   readonly descriptor: MiddlewareDescriptor;
   /** 登记序号，阶段内排序的最后一级 */
   readonly order: number;
-}
-
-/** 一条顺序约束：first 在 second 之前，都是中间件名（实例名或类型名） */
-interface Constraint {
-  readonly first: string;
-  readonly second: string;
+  /** 要排在这些中间件之前 */
+  readonly before: string[];
+  /** 要排在这些中间件之后 */
+  readonly after: string[];
 }
 
 /**
@@ -107,11 +110,11 @@ interface Constraint {
  * @remarks
  * 排序：先阶段；阶段内先位置（Beginning 在前），再归属的码元序，再登记顺序；最后按约束做稳定拓扑排序。
  * 报错的时机照 .NET（RFC-0004 排序规则第 8 条）：重复登记、未知阶段、约束主体未登记或有歧义在登记时立即报；约束目标未登记、
- * 有歧义、跨阶段与成环在排序时（`describe`、`dump`、`build`）报。错误以 {@link FrameworkError} 抛出
+ * 有歧义、跨阶段与成环在排序时（`describe`、`dump`、`build`）报。错误以 {@link FrameworkError} 抛出，
+ * 消息是与 .NET 逐字相同的英文原文（ADR-0236），按名字登记的实例写成 `类型名[名字]`
  */
 export class PipelineBuilder {
   readonly #registrations: Registration[] = [];
-  readonly #constraints: Constraint[] = [];
 
   /**
    * 登记中间件到 transaction 阶段末尾（RFC-0004 排序规则第 1 条）
@@ -153,14 +156,14 @@ export class PipelineBuilder {
    * 约束 `middleware` 在 `other` 之前
    *
    * @remarks
-   * 两端都是中间件名：命名实例的实例名，或类型名（RFC-0004 排序规则第 7 条）。约束主体 `middleware` 在声明时必须已登记；
+   * 两端都是中间件名：按名字登记的实例名，或没有名字、只登记一次的中间件的类型名（RFC-0004 排序规则第 7 条）；
+   * 按名字登记的实例不能按类型名指到。约束主体 `middleware` 在声明时必须已登记；
    * 目标 `other` 在排序时解析，未登记、对应多个中间件或不在同一阶段都是 `KERNEL_PIPELINE_003`
    *
    * @throws {@link FrameworkError} 主体还没有登记或按名字有歧义时，码为 `KERNEL_PIPELINE_003`
    */
   before(middleware: string, other: string): this {
-    this.#checkSubject(middleware);
-    this.#constraints.push({ first: middleware, second: other });
+    requireByName(this.#registrations, middleware).before.push(other);
     return this;
   }
 
@@ -170,8 +173,7 @@ export class PipelineBuilder {
    * @throws {@link FrameworkError} 主体还没有登记或按名字有歧义时，码为 `KERNEL_PIPELINE_003`
    */
   after(middleware: string, other: string): this {
-    this.#checkSubject(middleware);
-    this.#constraints.push({ first: other, second: middleware });
+    requireByName(this.#registrations, middleware).after.push(other);
     return this;
   }
 
@@ -183,17 +185,10 @@ export class PipelineBuilder {
    */
   clone(): PipelineBuilder {
     const copy = new PipelineBuilder();
-    copy.#registrations.push(...this.#registrations);
-    copy.#constraints.push(...this.#constraints);
-    return copy;
-  }
-
-  /** 约束主体在声明时必须已登记且按名字唯一，登记时立即报（RFC-0004 排序规则第 8 条） */
-  #checkSubject(name: string): void {
-    if (matching(this.#registrations, name).length === 0) {
-      throw registrationError(`The middleware '${name}' must be registered before it declares an ordering constraint.`);
+    for (const registration of this.#registrations) {
+      copy.#registrations.push({ ...registration, before: [...registration.before], after: [...registration.after] });
     }
-    single(this.#registrations, name);
+    return copy;
   }
 
   /**
@@ -268,35 +263,31 @@ export class PipelineBuilder {
       ({ descriptor }) => descriptor.middleware === middleware.name && descriptor.instance === instance,
     );
     if (duplicate) {
-      throw registrationError(`The middleware '${display}' is registered more than once.`);
+      throw registrationError(
+        instance === undefined
+          ? `Middleware '${middleware.name}' is already registered; each middleware type may appear only once in a pipeline unless its instances are named.`
+          : `Middleware '${middleware.name}' named '${instance}' is already registered; instance names must be unique within a type.`,
+      );
     }
     this.#registrations.push({
       middleware,
       descriptor: Object.freeze({ stage, middleware: middleware.name, instance, owner, placement, display }),
       order: this.#registrations.length,
+      before: [],
+      after: [],
     });
     return this;
   }
 
   /** 按规则排序：先阶段；阶段内先位置，再归属，再登记顺序，最后按约束做稳定拓扑排序 */
   #sorted(): Registration[] {
-    // 约束的目标在排序时解析（RFC-0004 排序规则第 8 条）：未登记、对应多个中间件、跨阶段都是登记错误
-    const resolved: [Registration, Registration][] = this.#constraints.map(({ first, second }) => {
-      const before = single(this.#registrations, first);
-      const after = single(this.#registrations, second);
-      if (before.descriptor.stage !== after.descriptor.stage) {
-        throw registrationError(`The ordering constraint between '${first}' and '${second}' crosses stages.`);
-      }
-      return [before, after];
-    });
-
     const result: Registration[] = [];
     for (const stage of pipelineStages) {
       // Array.prototype.sort 是稳定排序，比较到登记序号为止，基准次序完全确定
       const members = this.#registrations
         .filter((registration) => registration.descriptor.stage === stage)
         .sort(compareBase);
-      result.push(...topologicalSort(stage, members, resolved));
+      result.push(...topologicalSort(stage, members, this.#registrations));
     }
     return result;
   }
@@ -326,58 +317,96 @@ function compareBase(left: Registration, right: Registration): number {
 }
 
 /**
- * 名字对应的登记：实例名等于它的命名实例，与类型名等于它的登记
+ * 按名字找登记：按名字登记的实例按实例名，没有名字的按类型名（RFC-0004 排序规则第 7 条）；没有时为 `undefined`
  *
- * @remarks
- * 只登记了一次的类型按类型名也能指到（含只有一个命名实例的）；同一类型有多个实例时按类型名会指到多个
+ * @throws {@link FrameworkError} 同一个名字对应多个登记时，码为 `KERNEL_PIPELINE_003`
  */
-function matching(registrations: readonly Registration[], name: string): Registration[] {
-  return registrations.filter(({ descriptor }) => descriptor.instance === name || descriptor.middleware === name);
+function findByName(registrations: readonly Registration[], name: string): Registration | undefined {
+  let found: Registration | undefined;
+  for (const registration of registrations) {
+    const { instance, middleware } = registration.descriptor;
+    if ((instance === undefined ? middleware : instance) !== name) {
+      continue;
+    }
+    if (found !== undefined) {
+      throw registrationError(
+        `The middleware name '${name}' matches several registrations, so ordering constraints by name are ambiguous for it.`,
+      );
+    }
+    found = registration;
+  }
+  return found;
 }
 
-/** 按名字取唯一的登记；没有或对应多个中间件都是登记错误 */
-function single(registrations: readonly Registration[], name: string): Registration {
-  const found = matching(registrations, name);
-  if (found.length === 0) {
-    throw registrationError(`The ordering constraint references the unregistered middleware '${name}'.`);
-  }
-  if (found.length > 1) {
-    const displays = found.map((registration) => registration.descriptor.display).join(', ');
+/** 约束主体在声明时必须已登记且按名字唯一，登记时立即报（RFC-0004 排序规则第 8 条） */
+function requireByName(registrations: readonly Registration[], name: string): Registration {
+  const found = findByName(registrations, name);
+  if (found === undefined) {
     throw registrationError(
-      `The name '${name}' refers to several middleware (${displays}); ordering constraints by it are ambiguous.`,
+      `Middleware '${name}' is not registered, so no ordering constraint can be declared for it.`,
     );
   }
-  return found[0] as Registration;
+  return found;
+}
+
+/** 约束的目标在排序时解析（RFC-0004 排序规则第 8 条）：未登记、对应多个中间件、跨阶段都是登记错误 */
+function resolveTarget(
+  registrations: readonly Registration[],
+  source: Registration,
+  target: string,
+  stage: PipelineStage,
+): Registration {
+  const other = findByName(registrations, target);
+  if (other === undefined) {
+    throw registrationError(
+      `The ordering constraint of middleware '${source.descriptor.display}' references unregistered middleware '${target}'.`,
+    );
+  }
+  if (other.descriptor.stage !== stage) {
+    throw registrationError(
+      `Middleware '${source.descriptor.display}' (stage '${stage}') and '${target}' (stage '${other.descriptor.stage}') are not in the same stage, so no relative order can be declared between them.`,
+    );
+  }
+  return other;
 }
 
 /**
  * 在基准次序上应用约束做稳定拓扑排序
  *
  * @remarks
- * Kahn 算法，每次取基准次序里最靠前的无前驱节点：约束只调整必要的相对位置，其余保持基准次序（RFC-0004 排序规则第 5 条）
+ * 边按 .NET 的顺序建立：阶段内按基准次序逐个登记，先它的 before、再它的 after，目标在这时解析。
+ * Kahn 算法，每次取基准次序里最靠前的无前驱节点：约束只调整必要的相对位置，其余保持基准次序（RFC-0004 排序规则第 5 条）；
+ * 成环时按基准次序列出全部仍被卡住的中间件
  */
 function topologicalSort(
   stage: PipelineStage,
   members: Registration[],
-  constraints: readonly [Registration, Registration][],
+  registrations: readonly Registration[],
 ): Registration[] {
-  const inStage = new Set(members);
-  const incoming = new Map<Registration, number>();
-  const outgoing = new Map<Registration, Registration[]>();
-  for (const [first, second] of constraints) {
-    // 约束已核对过同阶段，只需挑出本阶段的
-    if (!inStage.has(first)) {
-      continue;
-    }
-    outgoing.set(first, [...(outgoing.get(first) ?? []), second]);
+  const incoming = new Map<Registration, number>(members.map((member) => [member, 0]));
+  const outgoing = new Map<Registration, Registration[]>(members.map((member) => [member, []]));
+  const edge = (first: Registration, second: Registration): void => {
+    outgoing.get(first)?.push(second);
     incoming.set(second, (incoming.get(second) ?? 0) + 1);
+  };
+  for (const member of members) {
+    for (const target of member.before) {
+      edge(member, resolveTarget(registrations, member, target, stage));
+    }
+    for (const target of member.after) {
+      edge(resolveTarget(registrations, member, target, stage), member);
+    }
   }
   const ordered: Registration[] = [];
   const remaining = [...members];
   while (remaining.length > 0) {
     const picked = remaining.findIndex((candidate) => (incoming.get(candidate) ?? 0) === 0);
     if (picked < 0) {
-      throw new FrameworkError(PipelineErrorCode.Cycle, `The ordering constraints in stage '${stage}' form a cycle.`);
+      const stuck = remaining.map((registration) => `'${registration.descriptor.display}'`).join(', ');
+      throw new FrameworkError(
+        PipelineErrorCode.Cycle,
+        `Middleware ordering constraints in stage '${stage}' form a cycle: ${stuck}.`,
+      );
     }
     const [node] = remaining.splice(picked, 1) as [Registration];
     ordered.push(node);
@@ -393,7 +422,7 @@ function registrationError(message: string): FrameworkError {
 }
 
 function unknownStage(name: string): FrameworkError {
-  return new FrameworkError(PipelineErrorCode.UnknownStage, `'${name}' is not a pipeline stage.`);
+  return new FrameworkError(PipelineErrorCode.UnknownStage, `Unknown pipeline stage '${name}'.`);
 }
 
 function invalid(message: string): FrameworkError {
