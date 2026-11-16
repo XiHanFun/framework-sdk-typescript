@@ -175,6 +175,19 @@ export class PipelineBuilder {
     return this;
   }
 
+  /**
+   * 复制一份登记与约束都相同的构建器；之后两份各自登记，互不影响
+   *
+   * @remarks
+   * 调用器在复制上加入自己的内置步骤，不改调用方的构建器（RFC-0011 规则 10）
+   */
+  clone(): PipelineBuilder {
+    const copy = new PipelineBuilder();
+    copy.#registrations.push(...this.#registrations);
+    copy.#constraints.push(...this.#constraints);
+    return copy;
+  }
+
   /** 约束主体在声明时必须已登记且按名字唯一，登记时立即报（RFC-0004 排序规则第 8 条） */
   #checkSubject(name: string): void {
     if (matching(this.#registrations, name).length === 0) {

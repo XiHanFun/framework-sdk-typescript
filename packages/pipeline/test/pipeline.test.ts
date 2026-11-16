@@ -252,6 +252,21 @@ test('中间件把派生的上下文交给下游；已构建的管道不受之�
   assert.equal(builder.describe().length, 2);
 });
 
+test('复制的构建器与原来的互不影响', () => {
+  const original = new PipelineBuilder()
+    .useAt(noop('A'), PipelineStage.Validate)
+    .useAt(noop('B'), PipelineStage.Validate)
+    .before('B', 'A');
+  const copy = original.clone().useAt(noop('C'), PipelineStage.Observe, Placement.Beginning, 'xihan.kernel.core');
+  assert.equal(original.dump(), 'validate     B\nvalidate     A\n');
+  assert.equal(copy.dump(), 'observe      C\nvalidate     B\nvalidate     A\n');
+  // 复制保留重复登记的核对
+  assert.equal(
+    codeOf(() => copy.useAt(noop('A'), PipelineStage.Handle)),
+    PipelineErrorCode.Registration,
+  );
+});
+
 test('次序约束可以按实例名声明，主体在声明时必须已登记', () => {
   const builder = new PipelineBuilder()
     .useNamedInstance('guard-a', noop('Guard'), PipelineStage.Observe, Placement.End, 'xihan.plugins.a')
