@@ -35,6 +35,7 @@ import {
   JsonPath,
   PipelineStage,
   Result,
+  readJsonText,
   Stability,
 } from '@xihan-framework/primitives';
 
@@ -317,6 +318,30 @@ test('管道结束之后才编码响应：数字按值模型写，写不出时�
   assert.ok(!direct.outcome.ok);
   assert.equal(direct.outcome.error.messageKey, InvocationMessageKey.UnhandledException);
   assert.equal(direct.payload, undefined);
+});
+
+test('任意 JSON 的成员原样保留读到的值，写回时 JSON 值相等', async () => {
+  const registry = new OperationRegistry();
+  const contract = defineContract<unknown, unknown>({ id: 'echoes.create', expose: [] });
+  registry.add({
+    contract,
+    request: RequestShape.object({ meta: RequestShape.json() }),
+    handler: async (_context, request) => Result.ok((request as { meta: unknown }).meta),
+  });
+  const invoker = new OperationInvoker(registry);
+  const meta =
+    '{"big":1e400,"tiny":1e-400,"exact":9007199254740993,"beyond":123456789012345678901234567890,"two":2.0,"int":2,"precise":0.1000000000000000000001,"negativeZero":-0.0,"nested":[1E+17,{"x":null}]}';
+  const response = await invoker.invoke(InvocationContext.create(), {
+    id: 'echoes.create',
+    payload: `{"meta":${meta}}`,
+  });
+  assert.ok(response.outcome.ok);
+  // 数字照原文或按值模型写回：1e400 不是 null 也不是无穷，超出双精度的整数精确，2.0 仍是浮点
+  assert.equal(response.payload, meta);
+  const read = readJsonText(response.payload ?? '');
+  const original = readJsonText(meta);
+  assert.ok(read.ok && original.ok);
+  assert.deepEqual(read.root, original.root, 'the JSON values are equal');
 });
 
 test('登记表拒绝重复、不合法的 ID 与契约', () => {
