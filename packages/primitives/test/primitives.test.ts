@@ -12,6 +12,7 @@ import {
   ErrorInfo,
   errorCodeDomain,
   errorCodeKind,
+  Float64,
   FrameworkError,
   FrameworkInfo,
   formatMessage,
@@ -19,6 +20,7 @@ import {
   isBaggageKeyWellFormed,
   isBaggageValueAcceptable,
   isErrorCode,
+  isIntegerNumber,
   isLifecycleState,
   isLocaleName,
   isMessageKey,
@@ -26,6 +28,8 @@ import {
   isServing,
   isStability,
   isTerminal,
+  JsonMembers,
+  type JsonNode,
   LifecycleState,
   lifecycleStateFromOrdinal,
   lifecycleStateOrdinal,
@@ -33,7 +37,10 @@ import {
   Maybe,
   MessageCatalog,
   maxBaggageValueLength,
+  maxInt64,
+  maxJsonDepth,
   messageKeyDomain,
+  minInt64,
   PipelineStage,
   PrimitivesMessageKey,
   parseJson,
@@ -41,22 +48,53 @@ import {
   pipelineStages,
   placeholders,
   positional,
+  quoteJsonString,
   Result,
+  readJsonText,
   registeredBaggageKeys,
   Stability,
   setDefaultMessages,
   stabilities,
   stabilityOrdinal,
   type TypedId,
+  toJsonValue,
   tryFormatMessage,
   typedId,
   validateErrorCode,
+  writeJson,
 } from '@xihan-framework/primitives';
 
-/** 直接读取规范子模块里的一致性向量，不复制向量文件 */
+/**
+ * 直接读取规范子模块里的一致性向量，不复制向量文件
+ *
+ * @remarks
+ * 用本 SDK 的 parseJson 读：向量里的数字按值模型（9007199254740993 是整数，2.0 与 -0.0 是浮点），JSON.parse 分不出
+ */
 function vector<T>(name: string): T {
   const url = new URL(`../../../spec/conformance/vectors/primitives/${name}`, import.meta.url);
-  return JSON.parse(readFileSync(url, 'utf8')) as T;
+  return parseJson(readFileSync(url)) as unknown as T;
+}
+
+/**
+ * 把 JSON 值换成按值模型比较的形状：整数与浮点分开，整数按十进制文本精确比较，对象按成员名比较、不看顺序
+ */
+function modelOf(value: unknown): unknown {
+  if (typeof value === 'number') {
+    return isIntegerNumber(value) ? { integer: String(value) } : { float: value };
+  }
+  if (typeof value === 'bigint') {
+    return value >= minInt64 && value <= maxInt64 ? { integer: value.toString() } : { float: Number(value) };
+  }
+  if (value instanceof Float64) {
+    return { float: value.value };
+  }
+  if (Array.isArray(value)) {
+    return value.map(modelOf);
+  }
+  if (typeof value === 'object' && value !== null) {
+    return new Map(Object.entries(value).map(([name, member]) => [name, modelOf(member)]));
+  }
+  return value;
 }
 
 /** 断言抛出带指定错误码的 FrameworkError */
@@ -212,7 +250,14 @@ test('错误的细节只收 JSON 值、冻结并按键排序', () => {
   assert.ok(Object.isFrozen(error.details) && Object.isFrozen(error.details?.a));
   assert.deepEqual(Object.keys(error.details ?? {}), ['a', 'b']);
   assert.equal(JSON.stringify(error.details), '{"a":{"c":null,"d":[1,"x"]},"b":1}');
-  for (const bad of [{ when: new Date(0) }, { n: Number.NaN }, { f: () => 1 }, { u: undefined }, { b: 1n }]) {
+  // 数字按值模型保留：bigint、Float64 与非有限的浮点都可以放进细节，线上写法见 writeJson（ADR-0236）
+  const numbers = ErrorInfo.create('ORDERS_VALIDATION_001', 'orders.invalid', {
+    big: 9007199254740993n,
+    two: new Float64(2),
+    nan: Number.NaN,
+  });
+  assert.equal(writeJson(numbers.details), '{"big":9007199254740993,"nan":"NaN","two":2.0}');
+  for (const bad of [{ when: new Date(0) }, { f: () => 1 }, { u: undefined }, { s: Symbol('s') }]) {
     throwsCode(
       () => ErrorInfo.create('ORDERS_VALIDATION_001', 'orders.invalid', bad as never),
       ErrorCode.InvalidArgument,
@@ -406,8 +451,20 @@ interface WireCase {
   readonly canonical?: unknown;
 }
 
-/** 按样例的 kind 读出一条 Result 编码 */
-function readResult(wire: WireCase): unknown {
+/** 按样例的 kind 从 JSON 文本读出一条 Result 编码 */
+function readResult(wire: WireCase, text: string): unknown {
+  switch (wire.kind) {
+    case 'unit':
+      return Result.parse(text);
+    case 'maybe':
+      return Result.parseMaybe(text, (value) => value);
+    default:
+      return Result.parse(text, (value) => value);
+  }
+}
+
+/** 按样例的 kind 从已解析的值读出一条 Result 编码 */
+function readResultValue(wire: WireCase): unknown {
   switch (wire.kind) {
     case 'unit':
       return Result.fromJSON(wire.json);
@@ -423,24 +480,29 @@ test('Result 与 Error 的线上编码遵循向量', () => {
     results: { valid: WireCase[]; invalid: WireCase[] };
     errors: { valid: WireCase[]; invalid: WireCase[] };
   }>('wire-encoding.json');
-  // 合法样例读得出，再写出时按 JSON 值等于规范形式；比较的是 JSON 值，不比较成员顺序
+  // 合法样例读得出，再写出时按值模型等于规范形式：整数精确、整数值的浮点仍是浮点；不比较成员顺序
   for (const wire of vectors.results.valid) {
-    const written = JSON.parse(JSON.stringify(readResult(wire)));
-    assert.deepEqual(written, wire.canonical ?? wire.json, wire.name);
+    const expected = modelOf(wire.canonical ?? wire.json);
+    assert.deepEqual(modelOf(parseJson(writeJson(readResult(wire, writeJson(wire.json))))), expected, wire.name);
+    assert.deepEqual(modelOf(parseJson(writeJson(readResultValue(wire)))), expected, `${wire.name} (value)`);
   }
   for (const wire of vectors.results.invalid) {
-    throwsCode(() => readResult(wire), ErrorCode.InvalidArgument);
+    throwsCode(() => readResult(wire, writeJson(wire.json)), ErrorCode.InvalidArgument);
+    throwsCode(() => readResultValue(wire), ErrorCode.InvalidArgument);
   }
   for (const wire of vectors.errors.valid) {
-    const written = JSON.parse(JSON.stringify(ErrorInfo.fromJSON(wire.json)));
-    assert.deepEqual(written, wire.canonical ?? wire.json, wire.name);
+    const expected = modelOf(wire.canonical ?? wire.json);
+    assert.deepEqual(modelOf(parseJson(writeJson(ErrorInfo.parse(writeJson(wire.json))))), expected, wire.name);
+    assert.deepEqual(modelOf(parseJson(writeJson(ErrorInfo.fromJSON(wire.json)))), expected, `${wire.name} (value)`);
   }
   for (const wire of vectors.errors.invalid) {
-    assert.throws(
-      () => ErrorInfo.fromJSON(wire.json),
-      (error: unknown) => error instanceof FrameworkError && error.code === ErrorCode.InvalidArgument,
-      wire.name,
-    );
+    for (const read of [() => ErrorInfo.parse(writeJson(wire.json)), () => ErrorInfo.fromJSON(wire.json)]) {
+      assert.throws(
+        read,
+        (error: unknown) => error instanceof FrameworkError && error.code === ErrorCode.InvalidArgument,
+        wire.name,
+      );
+    }
   }
 });
 
@@ -577,7 +639,7 @@ test('JSON 写不出的数值：非数、无穷与 bigint', () => {
   assert.equal(describe('orders.line.invalid', { z: -0, a: 1e-7 }), 'orders.line.invalid (a=1E-07, z=-0)');
 });
 
-test('同一层的重复成员名不合法（wire-encoding.json 的 duplicates）', () => {
+test('任何一层的重复成员名都不合法（wire-encoding.json 的 duplicates）', () => {
   const { duplicates } = vector<{
     duplicates: { name: string; target: 'result' | 'error'; kind?: 'value' | 'unit'; text: string }[];
   }>('wire-encoding.json');
@@ -598,7 +660,7 @@ test('同一层的重复成员名不合法（wire-encoding.json 的 duplicates�
   throwsCode(() => Result.parse('{"ok":'), ErrorCode.InvalidArgument);
 });
 
-test('parseJson 只拒绝同一层的重复成员', () => {
+test('parseJson 拒绝同一个对象里的重复成员', () => {
   // 不同层、不同对象、数组里的同名成员都不算重复
   assert.deepEqual(parseJson('{"a":{"a":1},"b":[{"a":1},{"a":2}],"c":"\\"a\\""}'), {
     a: { a: 1 },
@@ -611,4 +673,73 @@ test('parseJson 只拒绝同一层的重复成员', () => {
     assert.throws(() => parseJson(text), FrameworkError, text);
   }
   assert.throws(() => parseJson('{,}'), { message: 'The text is not valid JSON.' });
+  assert.throws(() => parseJson('{"x":[{"b":1,"b":2}]}'), {
+    message: "The member at '$.x[0].b' appears more than once in the same JSON object.",
+  });
+  // __proto__ 是普通成员，不改原型
+  const proto = parseJson('{"__proto__":{"polluted":true}}') as Record<string, unknown>;
+  assert.ok(Object.hasOwn(proto, '__proto__') && Object.getPrototypeOf(proto) === Object.prototype);
+});
+
+test('JSON 文本的共同读取检查遵循 json-text.json', () => {
+  const { cases } = vector<{
+    cases: { name: string; text?: string; hex?: string; expect: 'valid' | 'syntax' | 'duplicate'; path?: string }[];
+  }>('json-text.json');
+  for (const c of cases) {
+    // 文本按 UTF-8 编码交给读取；有文本时也按字符串读一遍，两种入口结果相同
+    const inputs: (string | Uint8Array)[] =
+      c.hex === undefined ? [new TextEncoder().encode(c.text ?? ''), c.text ?? ''] : [Buffer.from(c.hex, 'hex')];
+    for (const input of inputs) {
+      const read = readJsonText(input);
+      const label = `${c.name} (${typeof input === 'string' ? 'string' : 'bytes'})`;
+      if (c.expect === 'valid') {
+        assert.ok(read.ok, label);
+      } else {
+        assert.deepEqual(read.ok ? undefined : read.problem, { kind: c.expect, path: c.path ?? '$' }, label);
+      }
+    }
+  }
+  // 字符串入口里的原始孤立代理项不是合法的 Unicode
+  assert.equal(readJsonText(`"${String.fromCharCode(0xd800)}"`).ok, false);
+  assert.equal(readJsonText(`"${String.fromCharCode(0xdc00)}"`).ok, false);
+  assert.equal(maxJsonDepth, 64);
+});
+
+test('数字按值模型读写', () => {
+  const read = readJsonText('[1,-0,-0.0,2.0,1e2,1.5,9007199254740993,9223372036854775808,1e400,1e-400]');
+  assert.ok(read.ok);
+  const [one, zero, negativeZero, two, hundred, half, big, beyond, infinity, tiny] = read.root as JsonNode[];
+  assert.equal(one, 1);
+  assert.ok(Object.is(zero, 0), 'the integer writing -0 is the integer 0');
+  assert.ok(Object.is(negativeZero, -0));
+  assert.deepEqual([two, hundred], [new Float64(2), new Float64(100)]);
+  assert.equal(half, 1.5);
+  assert.equal(big, 9007199254740993n);
+  assert.equal(beyond, 2 ** 63, 'beyond 64 bits is a float');
+  assert.equal(infinity, Number.POSITIVE_INFINITY);
+  assert.deepEqual(tiny, new Float64(0));
+  assert.equal(
+    writeJson([1, -0, 2, new Float64(2), 1e16, 1e17, 0.1, 2n ** 63n, -(2n ** 63n), Number.NaN, -Infinity]),
+    '[1,-0.0,2,2.0,10000000000000000.0,1E+17,0.1,9.223372036854776E+18,-9223372036854775808,"NaN","-Infinity"]',
+  );
+  // 按文档顺序：整数样式的键在普通对象里会被提到前面，JsonMembers 保留原顺序
+  const ordered = readJsonText('{"b":1,"2":2,"1":3}');
+  assert.ok(ordered.ok && ordered.root instanceof JsonMembers);
+  assert.deepEqual(
+    ordered.root.entries.map(([name]) => name),
+    ['b', '2', '1'],
+  );
+  assert.equal(writeJson(ordered.root), '{"b":1,"2":2,"1":3}');
+  assert.equal(Object.keys(toJsonValue(ordered.root) as object).join(), '1,2,b');
+  assert.equal(Number(new Float64(2)) + 1, 3);
+  // JSON 字符串只转义必须转义的字符
+  const slash = '\\';
+  const control = String.fromCharCode(8, 12, 10, 13, 9, 1, 0x1f, 0x7f, 0xd800);
+  const expected = ['"q', slash, '"b', slash, slash, '/'];
+  for (const short of ['b', 'f', 'n', 'r', 't', 'u0001', 'u001f']) {
+    expected.push(slash, short);
+  }
+  expected.push(String.fromCharCode(0x7f), slash, 'ud800', 'é"');
+  assert.equal(quoteJsonString(`q"b${slash}/${control}é`), expected.join(''));
+  assert.equal(writeJson({ s: '😀' }), '{"s":"😀"}', 'paired surrogates stay as they are');
 });

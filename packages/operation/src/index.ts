@@ -22,7 +22,6 @@ export {
   findOperationResponsePayload,
   OperationInvoker,
 } from './invoker.ts';
-export { JsonPath } from './json-path.ts';
 export {
   OperationDescriptor,
   type OperationHandler,

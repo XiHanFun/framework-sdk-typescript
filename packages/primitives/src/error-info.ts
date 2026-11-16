@@ -1,7 +1,8 @@
 import { builtInMessages } from './built-in-messages.ts';
 import { ErrorCode, ErrorKind, errorCodeDomain, errorCodeKind, invalidErrorCode, isErrorCode } from './error-code.ts';
 import { FrameworkError } from './framework.ts';
-import { freezeJsonObject, isPlainObject, type JsonObject, parseJson } from './json.ts';
+import { freezeJsonObject, isPlainObject, type JsonObject } from './json.ts';
+import { parseJson } from './json-text.ts';
 import { describe, isMessageKey, resolveMessage } from './messages.ts';
 
 /**
@@ -32,7 +33,7 @@ export class ErrorInfo {
   readonly messageKey: string | undefined;
   /** 已解析的文案；未解析为 `undefined` */
   readonly text: string | undefined;
-  /** 模板参数，也是结构化细节；只含 JSON 可表示的值，键按升序、深度冻结 */
+  /** 模板参数，也是结构化细节；只含 JSON 可表示的值（数字按值模型），键按升序、深度冻结 */
   readonly details: JsonObject | undefined;
   /** 内部错误 */
   readonly inner: ErrorInfo | undefined;
@@ -130,11 +131,12 @@ export class ErrorInfo {
    * 从 JSON 文本还原
    *
    * @remarks
-   * 同一层的重复成员名不合法（含内部错误里的，ADR-0235）；其余规则同 {@link ErrorInfo.fromJSON}
+   * 先过共同的 JSON 读取检查（{@link readJsonText}，ADR-0236）：任何一层的重复成员都不合法，含 `details` 与 `inner` 的内部；
+   * 细节里的数字按值模型读，64 位范围内的整数精确。其余规则同 {@link ErrorInfo.fromJSON}
    *
    * @throws {@link FrameworkError} 不是 JSON、有重复成员或不合读写规则时，码为 `PRIMITIVES_VALIDATION_001`
    */
-  static parse(text: string): ErrorInfo {
+  static parse(text: string | Uint8Array): ErrorInfo {
     return ErrorInfo.fromJSON(parseJson(text));
   }
 
@@ -236,7 +238,8 @@ export class ErrorInfo {
    * 线上编码：字段顺序 `code`、`message`、`messageKey`、`details`、`inner`，没有的省略
    *
    * @remarks
-   * 空的 `details` 省略，与 Go SDK 一致
+   * 空的 `details` 省略，与 Go SDK 一致。细节里可以有 `bigint`、{@link Float64} 与非有限的浮点，
+   * 写成文本用 {@link writeJson}：`JSON.stringify` 写不出 `bigint`，也分不出整数与整数值的浮点
    */
   toJSON(): ErrorInfoJson {
     const json: {

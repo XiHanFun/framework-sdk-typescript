@@ -27,7 +27,29 @@ export {
 } from './error-code.ts';
 export { ErrorInfo, type ErrorInfoJson } from './error-info.ts';
 export { FrameworkError, type FrameworkErrorOptions, FrameworkInfo } from './framework.ts';
-export { isPlainObject, type JsonObject, type JsonPrimitive, type JsonValue, parseJson } from './json.ts';
+export {
+  Float64,
+  freezeJsonObject,
+  isIntegerNumber,
+  isPlainObject,
+  JsonMembers,
+  type JsonNode,
+  type JsonObject,
+  type JsonPrimitive,
+  type JsonValue,
+  maxInt64,
+  minInt64,
+} from './json.ts';
+export { JsonPath } from './json-path.ts';
+export {
+  type JsonTextProblem,
+  type JsonTextRead,
+  maxJsonDepth,
+  parseJson,
+  readJsonText,
+  toJsonValue,
+} from './json-text.ts';
+export { floatText, quoteJsonString, writeJson } from './json-writer.ts';
 export {
   canTransition,
   isLifecycleState,
