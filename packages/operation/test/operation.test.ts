@@ -654,6 +654,70 @@ test('截止时间在 Resilience 阶段的内置步骤上核对，进入时不�
   assert.ok(running.outcome.ok);
 });
 
+test('取消与截止时间只经信号通知，途中的取消在 Resilience 阶段归因', async () => {
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+  const registry = new OperationRegistry();
+  const contract = defineContract<{ readonly mode?: string | null }, string>({ id: 'slow.run', expose: [] });
+  registry.add({
+    contract,
+    request: RequestShape.object({ mode: RequestShape.string() }),
+    handler: async (context, request) => {
+      await sleep(30);
+      switch (request.mode) {
+        case 'written':
+          // 把取消写成结果，不知道是哪个信号触发的
+          return Result.fail(ErrorInfo.cancelled('KERNEL_CANCELLED_001', 'kernel.invocation.cancelled'));
+        case 'thrown':
+          context.signal.throwIfAborted();
+          return Result.ok('late');
+        default:
+          // 不看信号的处理器照常返回
+          return Result.ok('done');
+      }
+    },
+  });
+  // 排在 Resilience 之前的中间件看到的是结果，不是异常
+  const observed: string[] = [];
+  const invoker = new OperationInvoker(
+    registry,
+    new PipelineBuilder().useAt(
+      middleware('Watch', async (context, next) => {
+        try {
+          const outcome = await next(context);
+          observed.push(outcome.ok ? 'ok' : outcome.error.code);
+          return outcome;
+        } catch (error) {
+          observed.push('thrown');
+          throw error;
+        }
+      }),
+      PipelineStage.Observe,
+    ),
+  );
+  const run = (mode: string, options: Parameters<typeof InvocationContext.create>[0]) =>
+    invoker.invoke(InvocationContext.create(options), { id: 'slow.run', payload: JSON.stringify({ mode }) });
+  // 截止时间到了，处理器仍照常返回：调用以那个结果结束，不被强行中止
+  const finished = await run('ignore', { timeout: 5 });
+  assert.ok(finished.outcome.ok);
+  assert.equal(finished.payload, '"done"');
+  // 截止信号已触发时，写成结果的取消按超时报告
+  const written = await run('written', { timeout: 5 });
+  assert.equal(written.outcome.ok ? undefined : written.outcome.error.code, 'KERNEL_TIMEOUT_001');
+  assert.equal(
+    written.outcome.ok ? undefined : written.outcome.error.messageKey,
+    'kernel.invocation.deadline_exceeded',
+  );
+  // 调用方取消、截止时间没到：写成结果的取消仍是取消
+  const caller = new AbortController();
+  const pending = run('written', { signal: caller.signal, timeout: 10_000 });
+  caller.abort();
+  assert.equal(((await pending).outcome as { error?: ErrorInfo }).error?.code, 'KERNEL_CANCELLED_001');
+  // 抛出的中止在 Resilience 阶段就归因成结果
+  const thrown = await run('thrown', { timeout: 5 });
+  assert.equal(thrown.outcome.ok ? undefined : thrown.outcome.error.code, 'KERNEL_TIMEOUT_001');
+  assert.deepEqual(observed, ['ok', 'KERNEL_TIMEOUT_001', 'KERNEL_CANCELLED_001', 'KERNEL_TIMEOUT_001']);
+});
+
 /** 向量的三个请求类型（payload-reasons.json 的 requests） */
 const vectorShapes = {
   // 对象，成员值都是 32 位整数（整数字典）

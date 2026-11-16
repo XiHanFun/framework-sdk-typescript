@@ -26,7 +26,7 @@ export const InvocationErrorCode = Object.freeze({
 export const InvocationMessageKey = Object.freeze({
   /** 超时 */
   DeadlineExceeded: 'kernel.invocation.deadline_exceeded',
-  /** 调用开始时截止时间已过；由调用器在第一个中间件之前按时钟核对（RFC-0011 规则 10） */
+  /** 进入 Resilience 阶段时截止时间已过；由调用器在这个阶段的内置步骤上按时钟核对（RFC-0011 规则 10） */
   DeadlineBeforeStart: 'kernel.invocation.deadline_before_start',
   /** 取消 */
   Cancelled: 'kernel.invocation.cancelled',

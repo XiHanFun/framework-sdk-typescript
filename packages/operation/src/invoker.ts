@@ -283,11 +283,35 @@ const deadlineBeforeStart = ErrorInfo.timeout(
  * Resilience 阶段的内置步骤：进入时按时钟核对截止时间，已到即结束，后面的中间件与处理器不执行
  *
  * @remarks
- * 构造上下文时不做这项判断，进入时也不核对取消；途中的超时与取消按 RFC-0003 第 1 条归因
+ * 构造上下文时不做这项判断，进入时也不核对取消。途中的超时与取消按 RFC-0003 第 1 条归因，与 .NET 的 `DeadlineMiddleware` 相同：
+ * 下游抛出的中止，截止信号已触发即 `KERNEL_TIMEOUT_001`，否则是调用方的取消 `KERNEL_CANCELLED_001`；下游把取消写成了
+ * `KERNEL_CANCELLED_001` 结果而截止信号已触发的，按超时报告。取消与截止时间只经信号通知，这里不强行中止下游：
+ * 不与信号赛跑、不丢弃处理器的 Promise，信号触发之后处理器照常返回结果的，调用以那个结果结束
  */
-const deadlineStep: Middleware = middleware(BuiltInStep.Deadline, async (context, next) =>
-  context.isExpired(Date.now()) ? Result.fail(deadlineBeforeStart) : next(context),
-);
+const deadlineStep: Middleware = middleware(BuiltInStep.Deadline, async (context, next) => {
+  if (context.isExpired(Date.now())) {
+    return Result.fail(deadlineBeforeStart);
+  }
+  let outcome: Result<void>;
+  try {
+    outcome = await next(context);
+  } catch (error) {
+    const cancellation = context.cancellation;
+    if (cancellation !== undefined && isAbort(error, context.signal)) {
+      return Result.fail(cancellation);
+    }
+    throw error;
+  }
+  const cancellation = context.cancellation;
+  if (
+    !outcome.ok &&
+    outcome.error.code === InvocationErrorCode.Cancelled &&
+    cancellation?.code === InvocationErrorCode.DeadlineExceeded
+  ) {
+    return Result.fail(cancellation);
+  }
+  return outcome;
+});
 
 /** Validate 阶段的内置步骤：原始调用在这里解码载荷（RFC-0011 规则 2）；类型化调用已有请求，跳过 */
 const validationStep: Middleware = middleware(BuiltInStep.Validation, async (context, next) => {
