@@ -132,8 +132,9 @@ test('截止时间的边界：已过期、超出定时器范围', async () => {
   const past = InvocationContext.create({ deadline: Date.now() - 1 });
   assert.ok(past.signal.aborted, 'a deadline in the past aborts at once');
   assert.equal(past.cancellation?.code, InvocationErrorCode.DeadlineExceeded);
-  assert.equal(past.cancellation?.messageKey, InvocationMessageKey.DeadlineBeforeStart);
-  assert.equal(past.cancellation?.message, 'The invocation exceeded its deadline before it started.');
+  // 构造上下文时不判断开始前是否已过期（ADR-0235）：那由调用器在第一个中间件之前核对
+  assert.equal(past.cancellation?.messageKey, InvocationMessageKey.DeadlineExceeded);
+  assert.equal(past.cancellation?.message, 'The invocation exceeded its deadline.');
 
   // 超出定时器范围的截止时间不起定时器，调用期间不会到期，但按时钟仍可判断过期
   const far = Date.now() + 40 * 24 * 60 * 60 * 1000;

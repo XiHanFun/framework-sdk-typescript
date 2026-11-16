@@ -1,4 +1,9 @@
-import { type InvocationContext, InvocationMessageKey, ItemKey } from '@xihan-framework/invocation';
+import {
+  type InvocationContext,
+  InvocationErrorCode,
+  InvocationMessageKey,
+  ItemKey,
+} from '@xihan-framework/invocation';
 import { PipelineBuilder, type Step } from '@xihan-framework/pipeline';
 import { ErrorCode, ErrorInfo, FrameworkError, Result } from '@xihan-framework/primitives';
 
@@ -93,7 +98,8 @@ export class OperationInvoker {
    * 执行一个 XGI 请求
    *
    * @remarks
-   * 未登记返回 `KERNEL_NOTFOUND_001`，不进管道；否则经完整管道执行。管道以成功结束却没有响应（中间件以成功短路）
+   * 未登记返回 `KERNEL_NOTFOUND_001`，截止时间已过才开始返回 `KERNEL_TIMEOUT_001` + `kernel.invocation.deadline_before_start`，
+   * 都不进管道；否则经完整管道执行。管道以成功结束却没有响应（中间件以成功短路）
    * 返回 `KERNEL_UNEXPECTED_001` + `kernel.operation.no_response`（RFC-0011 规则 9）；中间件或处理器抛出的异常翻译为失败，
    * 不抛出（规则 5）
    */
@@ -101,6 +107,9 @@ export class OperationInvoker {
     const descriptor = this.registry.find(request.id);
     if (descriptor === undefined) {
       return { outcome: Result.fail(notFound(request.id)), payload: undefined };
+    }
+    if (startedTooLate(context)) {
+      return { outcome: Result.fail(deadlineBeforeStart), payload: undefined };
     }
     enter(context, descriptor, request, async (current) => {
       const response = await descriptor.execute(current, request.payload);
@@ -145,6 +154,9 @@ export class OperationInvoker {
           actual: 'another contract object',
         }),
       );
+    }
+    if (startedTooLate(context)) {
+      return Result.fail(deadlineBeforeStart);
     }
     const { handler } = internalsOf(descriptor);
     let result: Result<Res> | undefined;
@@ -207,4 +219,20 @@ function isAbort(error: unknown, signal: AbortSignal): boolean {
   }
   const name = typeof error === 'object' && error !== null ? (error as { name?: unknown }).name : undefined;
   return name === 'AbortError' || name === 'TimeoutError';
+}
+
+/** 截止时间已过才开始的调用的失败（RFC-0011「错误码」） */
+const deadlineBeforeStart = ErrorInfo.timeout(
+  InvocationErrorCode.DeadlineExceeded,
+  InvocationMessageKey.DeadlineBeforeStart,
+);
+
+/**
+ * 截止时间在调用开始前是否已过
+ *
+ * @remarks
+ * SDK 没有截止时间中间件，由调用器在第一个中间件执行之前按时钟核对，已到即结束、管道不执行（RFC-0011 规则 10，ADR-0235）
+ */
+function startedTooLate(context: InvocationContext): boolean {
+  return context.isExpired(Date.now());
 }

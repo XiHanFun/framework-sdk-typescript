@@ -26,7 +26,7 @@ export const InvocationErrorCode = Object.freeze({
 export const InvocationMessageKey = Object.freeze({
   /** 超时 */
   DeadlineExceeded: 'kernel.invocation.deadline_exceeded',
-  /** 调用开始时截止时间已过 */
+  /** 调用开始时截止时间已过；由调用器在第一个中间件之前按时钟核对（RFC-0011 规则 10） */
   DeadlineBeforeStart: 'kernel.invocation.deadline_before_start',
   /** 取消 */
   Cancelled: 'kernel.invocation.cancelled',
@@ -38,10 +38,6 @@ export const InvocationMessageKey = Object.freeze({
 const maxTimerDelay = 2_147_483_647;
 
 const deadlineExceeded = ErrorInfo.timeout(InvocationErrorCode.DeadlineExceeded, InvocationMessageKey.DeadlineExceeded);
-const deadlineBeforeStart = ErrorInfo.timeout(
-  InvocationErrorCode.DeadlineExceeded,
-  InvocationMessageKey.DeadlineBeforeStart,
-);
 const cancelled = ErrorInfo.cancelled(InvocationErrorCode.Cancelled, InvocationMessageKey.Cancelled);
 
 /** 只在类型层面区分条目值的类型 */
@@ -99,8 +95,6 @@ interface State {
   readonly signal: AbortSignal;
   /** 截止时间自己的信号：归因只看它是否已触发（RFC-0004「Resilience 阶段」） */
   readonly deadlineSignal: AbortSignal | undefined;
-  /** 创建时截止时间已过：这次调用还没开始就超时了 */
-  readonly expiredAtStart: boolean;
   readonly deadline: number | undefined;
   readonly traceId: string;
   readonly spanId: string;
@@ -153,7 +147,6 @@ export class InvocationContext {
       // 截止时间与取消并存：任一触发都中止这次调用（RFC-0003 第 1 条）
       signal: signals.length > 1 ? AbortSignal.any(signals) : (signals[0] ?? new AbortController().signal),
       deadlineSignal,
-      expiredAtStart: delay !== undefined && delay <= 0,
       deadline,
       ...trace,
       baggage: copyBaggage(options.baggage ?? {}),
@@ -322,12 +315,11 @@ export class InvocationContext {
    *
    * @remarks
    * 截止时间已触发即 `KERNEL_TIMEOUT_001`，调用方同时取消也一样（RFC-0003 第 1 条、RFC-0004「Resilience 阶段」）；
-   * 创建上下文时截止时间已过的，消息键是 `kernel.invocation.deadline_before_start`，否则是 `kernel.invocation.deadline_exceeded`。
    * 截止时间没有触发而调用方已取消为 `KERNEL_CANCELLED_001`。只看信号，不读时钟
    */
   get cancellation(): ErrorInfo | undefined {
     if (this.#state.deadlineSignal?.aborted === true) {
-      return this.#state.expiredAtStart ? deadlineBeforeStart : deadlineExceeded;
+      return deadlineExceeded;
     }
     return cancellationOf(this.#state.signal);
   }

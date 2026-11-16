@@ -435,3 +435,37 @@ test('抛出的异常翻译为失败：未处理的是 KERNEL_UNEXPECTED_001，�
   const broken = await failing.invoke(InvocationContext.create(), { id: 'faults.raise', payload: '{"mode":"plain"}' });
   assert.equal(codeOf(broken.outcome), OperationErrorCode.Unexpected);
 });
+
+test('截止时间已过才开始的调用在第一个中间件之前结束', async () => {
+  let entered = 0;
+  const builder = new PipelineBuilder().useAt(
+    middleware('Count', (context, next) => {
+      entered += 1;
+      return next(context);
+    }),
+    PipelineStage.Ingress,
+  );
+  const invoker = newInvoker(builder);
+  const late = InvocationContext.create({ deadline: Date.now() - 1 });
+  const response = await invoker.invoke(late, { id: 'orders.create', payload: '{"quantity":1}' });
+  assert.ok(!response.outcome.ok);
+  assert.equal(response.outcome.error.code, 'KERNEL_TIMEOUT_001');
+  assert.equal(response.outcome.error.messageKey, InvocationMessageKey.DeadlineBeforeStart);
+  assert.equal(response.outcome.error.message, 'The invocation exceeded its deadline before it started.');
+  const typed = await invoker.invokeTyped(late, createOrder, { quantity: 1 });
+  assert.ok(!typed.ok);
+  assert.equal(typed.error.messageKey, InvocationMessageKey.DeadlineBeforeStart);
+  assert.equal(entered, 0, 'the pipeline does not run');
+  // 未登记的操作仍先报未登记
+  assert.equal(codeOf((await invoker.invoke(late, { id: 'orders.missing' })).outcome), OperationErrorCode.NotFound);
+  // 还有时间的调用照常进管道
+  assert.ok(
+    (
+      await invoker.invoke(InvocationContext.create({ timeout: 1000 }), {
+        id: 'orders.create',
+        payload: '{"quantity":1}',
+      })
+    ).outcome.ok,
+  );
+  assert.equal(entered, 1);
+});
