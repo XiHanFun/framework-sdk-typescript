@@ -1,6 +1,6 @@
 # XiHan Framework SDK for TypeScript
 
-[XiHan Framework Spec](https://github.com/XiHanFun/framework-spec) 的 TypeScript 实现：原语层、清单、调用上下文、管道与操作契约。ADR-0004 把 TypeScript 定为 Go 之后的第二个 SDK，对接 XiHan.UI 与 MCP 生态，让前端与 Node 服务用同一套原语、清单与插件协议。形状与语义以 [framework-sdk-go](https://github.com/XiHanFun/framework-sdk-go) 的同名包为参照，参考实现是 .NET（[XiHan.Framework](https://github.com/XiHanFun/XiHan.Framework)）。规范以 submodule 放在 `spec/`，一致性由规范仓库的向量验证。
+[XiHan Framework Spec](https://github.com/XiHanFun/framework-spec) 的 TypeScript 实现：原语层、清单、调用上下文、管道与操作契约。ADR-0004 把 TypeScript 定为 Go 之后的第二个 SDK。形状与语义以 [framework-sdk-go](https://github.com/XiHanFun/framework-sdk-go) 的同名包为参照，参考实现是 .NET（[XiHan.Framework](https://github.com/XiHanFun/XiHan.Framework)）。规范以 submodule 放在 `spec/`，一致性由规范仓库的向量验证。
 
 ```bash
 pnpm add @xihan-framework/primitives @xihan-framework/invocation @xihan-framework/pipeline @xihan-framework/operation
