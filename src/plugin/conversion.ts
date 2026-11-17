@@ -2,12 +2,17 @@ import { InvocationContext } from '../invocation/index.ts';
 import {
   BaggageKey,
   defaultLocale,
+  defineMember,
   ErrorInfo,
+  Float64,
   isBaggageKeyRegistered,
   isErrorCode,
   isMessageKey,
+  isPlainObject,
   JsonMembers,
+  JsonNumber,
   type JsonObject,
+  type JsonValue,
   type LifecycleState,
   lifecycleStateOrdinal,
   Result,
@@ -87,9 +92,10 @@ export function toProtoError(error: ErrorInfo): pb.Error {
  * 把宿主写来的 `Error` 还原为原语层错误（plugin/invocation.md §3「读入」）
  *
  * @remarks
- * 码不合错误码文法时整个错误换成 `PLUGINS_UNEXPECTED_001` + `plugins.process.failed`（`phase` 为 `invoke`，
- * `reason` 为 `invalid error code '<code>'`）；消息键合文法的按键还原、不带文案，否则是自由文本错误，文案取 `text`，
- * 为空时取 `code`；`details` 为空、通不过共同 JSON 读取检查或不是对象时当作没有细节；`inner` 同此
+ * 码不合错误码文法时整个错误换成 `PLUGINS_UNEXPECTED_001` + `plugins.process.failed`（`phase` 一律为 `invoke`，
+ * `Host.Publish` 的结果也一样；`reason` 为 `invalid error code '<code>'`；原来的 `inner` 丢掉）；消息键合文法的按键还原、
+ * 不取 `text`，否则是自由文本错误，文案取 `text`，为空时取 `code`；`details` 按 {@link readDetails} 读；`inner` 同此。
+ * 向量见 spec/conformance/vectors/plugin/error-reading.json
  *
  * @internal
  */
@@ -105,13 +111,66 @@ export function fromProtoError(error: pb.Error, pluginId: string): ErrorInfo {
   return ErrorInfo.literal(error.code, error.text === '' ? error.code : error.text, details, inner);
 }
 
-/** `details` 文本：空、语法错误、重复成员或不是对象都当作没有细节 */
-function readDetails(text: string): JsonObject | undefined {
+/**
+ * 读 `Error.details` 的 JSON 文本（invocation.md §3）：为空、只有空白、是空对象、通不过共同 JSON 读取检查、不是对象，
+ * 或任何一层有读成双精度会溢出（±∞）的数时当作没有细节
+ *
+ * @remarks
+ * 数按值模型读：64 位范围内整数写法的数是整数，其余是双精度，下溢的读成 0、超出 64 位的整数读成双精度。共同读取检查为写回时
+ * 不变而保留原文的 `JsonNumber`，在这里换成双精度，与宿主读成 double 的值相同；只有空白的文本在共同读取检查里是语法错误
+ *
+ * @internal
+ */
+export function readDetails(text: string): JsonObject | undefined {
   if (text === '') {
     return undefined;
   }
   const read = readJsonText(text);
-  return read.ok && read.root instanceof JsonMembers ? (toJsonValue(read.root) as JsonObject) : undefined;
+  // 空对象与没有细节相同
+  if (!read.ok || !(read.root instanceof JsonMembers) || read.root.size === 0) {
+    return undefined;
+  }
+  const details = detailValue(toJsonValue(read.root));
+  return details === overflow ? undefined : (details as JsonObject);
+}
+
+/** {@link detailValue} 遇到溢出的数时的结果 */
+const overflow = Symbol('overflow');
+
+/** 把读出的值换成值模型：保留原文的数换成双精度，数组与对象逐项换算；任何一层有溢出的数时为 `overflow` */
+function detailValue(value: JsonValue): JsonValue | typeof overflow {
+  if (value instanceof JsonNumber) {
+    const number = Number(value.text);
+    if (!Number.isFinite(number)) {
+      return overflow;
+    }
+    // 值恰好是整数的双精度装进 Float64：写回时仍是浮点（1E+20、0.0），与宿主读成 double 再写出相同
+    return Number.isInteger(number) ? new Float64(number) : number;
+  }
+  if (Array.isArray(value)) {
+    const items: JsonValue[] = [];
+    for (const item of value) {
+      const converted = detailValue(item);
+      if (converted === overflow) {
+        return overflow;
+      }
+      items.push(converted);
+    }
+    return items;
+  }
+  if (isPlainObject(value)) {
+    const members: Record<string, JsonValue> = {};
+    for (const [name, item] of Object.entries(value as JsonObject)) {
+      const converted = detailValue(item);
+      if (converted === overflow) {
+        return overflow;
+      }
+      // 不用赋值：名为 __proto__ 的成员赋值会改原型
+      defineMember(members, name, converted);
+    }
+    return members;
+  }
+  return value;
 }
 
 /**
@@ -124,8 +183,8 @@ export function toStatus(result: Result<unknown>): pb.Status {
 }
 
 /**
- * 把宿主写来的 `Status` 还原为结果；失败却没有错误时为 `PLUGINS_UNEXPECTED_001` + `plugins.process.failed`
- * （`reason` 为 `the host reported a failure without an error`，invocation.md §3）
+ * 把宿主写来的 `Status` 还原为结果；失败却没有错误、或整个 `status` 缺失时为 `PLUGINS_UNEXPECTED_001` +
+ * `plugins.process.failed`（`reason` 为 `the host reported a failure without an error`，invocation.md §3）
  *
  * @param phase - 没有错误时写进 `phase`：`Host.Invoke` 为操作 ID，`Host.Publish` 为 `publish`
  *

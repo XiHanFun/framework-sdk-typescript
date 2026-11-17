@@ -17,7 +17,7 @@ import {
   type sendUnaryData,
   status,
 } from '@grpc/grpc-js';
-import type { InvocationContext } from 'xihan-framework/invocation';
+import { InvocationContext } from 'xihan-framework/invocation';
 import { defineContract, Expose, OperationRegistry, RequestShape } from 'xihan-framework/operation';
 import {
   CallbackPermission,
@@ -50,6 +50,7 @@ import {
   ErrorInfo,
   Float64,
   FrameworkError,
+  JsonNumber,
   type JsonObject,
   type JsonValue,
   LifecycleState,
@@ -61,6 +62,7 @@ import {
 } from 'xihan-framework/primitives';
 
 // 协议的生成代码与内部规则函数不是公开入口：测试直接加载它们，扮演宿主调用插件、扮演宿主的回调服务、回放向量
+import { fromProtoError, fromStatus } from '../src/plugin/conversion.ts';
 import { effectiveDeadline, formatDeadline, parseDeadline } from '../src/plugin/deadline.ts';
 import {
   callbackDenied,
@@ -1670,19 +1672,23 @@ interface Received {
 /** 扮演宿主的回调服务：记下收到的请求，按 `respond` 应答；`target` 缺省为回环 TCP 上系统分配的端口 */
 async function fakeHost(
   respond: {
-    invoke?: (request: pb.InvokeRequest) => pb.InvokeResponse | { code: number; details: string };
+    invoke?: (
+      request: pb.InvokeRequest,
+    ) => pb.InvokeResponse | { code: number; details: string } | Promise<pb.InvokeResponse>;
     publish?: (request: pb.PublishRequest) => pb.PublishResponse | { code: number; details: string };
   },
   target = '127.0.0.1:0',
 ) {
   const received: Received[] = [];
   const server = new Server();
-  const answer = <T>(reply: T | { code: number; details: string }, callback: sendUnaryData<T>) => {
-    if (typeof reply === 'object' && reply !== null && 'code' in reply) {
-      callback(reply);
-    } else {
-      callback(null, reply as T);
-    }
+  const answer = <T>(pending: T | { code: number; details: string } | Promise<T>, callback: sendUnaryData<T>) => {
+    void Promise.resolve(pending).then((reply) => {
+      if (typeof reply === 'object' && reply !== null && 'code' in reply) {
+        callback(reply as { code: number; details: string });
+      } else {
+        callback(null, reply as T);
+      }
+    });
   };
   const service: pb.HostServer = {
     invoke: (
@@ -2008,7 +2014,7 @@ test('读入宿主写来的 Error：码不合文法换成 plugins.process.failed
     assert.deepEqual(await relay(), protoError({ text: 'Missing.' }));
     error = protoError({ messageKey: 'Not A Key' });
     assert.deepEqual(await relay(), protoError({ text: 'ORDERS_NOTFOUND_001' }));
-    for (const details of ['[1]', '{"a":', '{"a":1,"a":2}', '"x"']) {
+    for (const details of ['[1]', '{"a":', '{"a":1,"a":2}', '"x"', '{}', '  ', '{"n":[1e400]}']) {
       error = protoError({ messageKey: 'orders.order.missing', details });
       assert.equal((await relay())?.details, '', details);
     }
@@ -2042,6 +2048,180 @@ test('读入宿主写来的 Error：码不合文法换成 plugins.process.failed
         details: { id: pluginId, phase: 'publish', reason: 'the host reported a failure without an error' },
       },
     ]);
+  } finally {
+    await plugin.close();
+    host.close();
+  }
+});
+
+/** error-reading.json 里线上 Error 的字段 */
+interface VectorProtoError {
+  readonly code: string;
+  readonly message_key: string;
+  readonly text: string;
+  readonly details: string;
+  readonly inner?: VectorProtoError;
+}
+
+/** error-reading.json 里读入后的错误 */
+interface VectorDecoded {
+  readonly code: string;
+  readonly key: string | null;
+  readonly text: string | null;
+  readonly details: JsonObject | null;
+  readonly inner: VectorDecoded | null;
+}
+
+/** 向量的线上 Error 换成协议消息 */
+function toProto(error: VectorProtoError): pb.Error {
+  return {
+    code: error.code,
+    messageKey: error.message_key,
+    text: error.text,
+    details: error.details,
+    inner: error.inner === undefined ? undefined : toProto(error.inner),
+  };
+}
+
+/** 细节按 JSON 值比较：各种数（number、bigint、Float64、JsonNumber）都换成 number */
+function plainDetails(value: unknown): unknown {
+  if (typeof value === 'bigint' || value instanceof Float64) {
+    return Number(value instanceof Float64 ? value.value : value);
+  }
+  if (value instanceof JsonNumber) {
+    return Number(value.text);
+  }
+  if (Array.isArray(value)) {
+    return value.map(plainDetails);
+  }
+  if (value !== null && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([name, item]) => [name, plainDetails(item)]));
+  }
+  return value;
+}
+
+/** 读入后的错误换成向量的形状 */
+function decodedOf(error: ErrorInfo): VectorDecoded {
+  return {
+    code: error.code,
+    key: error.messageKey ?? null,
+    text: error.messageKey === undefined ? (error.text ?? null) : null,
+    details: (plainDetails(error.details ?? null) ?? null) as JsonObject | null,
+    inner: error.inner === undefined ? null : decodedOf(error.inner),
+  };
+}
+
+test('读入宿主写来的 Error 遵循 error-reading.json：cases 与插件一侧的 statusWithoutError（invocation.md §3）', () => {
+  const vectors = vector<{
+    pluginId: string;
+    cases: { name: string; error: VectorProtoError; expected: VectorDecoded }[];
+    statusWithoutError: { reader: string; rpc?: string; operation?: string | null; expected: VectorDecoded }[];
+  }>('error-reading.json');
+  for (const entry of vectors.cases) {
+    const decoded = decodedOf(fromProtoError(toProto(entry.error), vectors.pluginId));
+    assert.deepEqual(decoded, plainDetails(entry.expected), entry.name);
+  }
+  // 宿主读插件的那几项不归 SDK：插件只读宿主写来的结果
+  const pluginSide = vectors.statusWithoutError.filter((entry) => entry.reader === 'plugin');
+  assert.equal(pluginSide.length, 2);
+  for (const entry of pluginSide) {
+    const phase = entry.rpc === 'publish' ? 'publish' : (entry.operation ?? '');
+    for (const status of [{ ok: false, error: undefined }, undefined]) {
+      // ok 为假却没有 error，整个 status 缺失也一样
+      const read = fromStatus(status, vectors.pluginId, phase);
+      assert.ok(!read.ok);
+      assert.deepEqual(decodedOf(read.error), plainDetails(entry.expected), JSON.stringify(entry));
+    }
+  }
+  // 读成的双精度写回时仍是浮点
+  const underflow = fromProtoError(
+    toProto(vectors.cases.find((entry) => entry.name.includes('下溢'))?.error as VectorProtoError),
+    vectors.pluginId,
+  );
+  assert.equal(writeJson(underflow.details ?? {}), '{"id":"a","n":0.0}');
+});
+
+test('回调发出前依次核对：端点、权限、租户，最后截止时间已过或已被取消也不发请求，结果同映射表（invocation.md §5）', async () => {
+  const host = await fakeHost({});
+  const plugin = await launch({}, { XIHAN_PLUGIN_HOST_ADDRESS: host.address });
+  try {
+    await startPlugin(plugin.client);
+    await invoke(plugin.client, 'probes.context');
+    const callback = findHost(plugin.probe.lastContext as InvocationContext);
+    assert.ok(callback !== undefined);
+    const expired = InvocationContext.create({ deadline: Date.now() - 1000 });
+    const controller = new AbortController();
+    controller.abort();
+    const cancelled = InvocationContext.create({ signal: controller.signal });
+    const outcomeOf = async (context: InvocationContext) => {
+      const response = await callback.invoke(context, 'orders.get');
+      return !response.outcome.ok && describeError(response.outcome.error);
+    };
+    assert.deepEqual(await outcomeOf(expired), {
+      code: 'KERNEL_TIMEOUT_001',
+      key: 'kernel.invocation.deadline_exceeded',
+      details: null,
+    });
+    assert.deepEqual(await outcomeOf(cancelled), {
+      code: 'KERNEL_CANCELLED_001',
+      key: 'kernel.invocation.cancelled',
+      details: null,
+    });
+    const batch = await callback.publish(expired, [{ topic: 'probe.events', id: '1', source: 's', type: 't' }]);
+    assert.equal(!batch[0]?.ok && batch[0]?.error.code, 'KERNEL_TIMEOUT_001');
+    // 租户先于截止时间
+    const foreign = await outcomeOf(expired.withBaggage(BaggageKey.Tenant, 't9'));
+    assert.equal(foreign && (foreign as { key: string }).key, PluginMessageKey.TenantDenied);
+    assert.equal(host.received.length, 0, 'nothing is sent');
+  } finally {
+    await plugin.close();
+  }
+  // 权限先于截止时间与取消
+  const denied = await launch({}, { XIHAN_PLUGIN_HOST_ADDRESS: host.address });
+  try {
+    await startPlugin(denied.client, '{}', []);
+    await invoke(denied.client, 'probes.context');
+    const callback = findHost(denied.probe.lastContext as InvocationContext);
+    const response = await callback?.invoke(InvocationContext.create({ deadline: Date.now() - 1000 }), 'orders.get');
+    assert.equal(
+      response && !response.outcome.ok && response.outcome.error.messageKey,
+      PluginMessageKey.CallbackDenied,
+    );
+  } finally {
+    await denied.close();
+    host.close();
+  }
+});
+
+test('回调途中到了截止时间按 DeadlineExceeded、调用方取消按 Cancelled 映射，不另按时钟改写（invocation.md §5）', async () => {
+  const host = await fakeHost({
+    invoke: () =>
+      delay(1000).then(() => ({ status: { ok: true, error: undefined }, payload: new TextEncoder().encode('{}') })),
+  });
+  const plugin = await launch({}, { XIHAN_PLUGIN_HOST_ADDRESS: host.address });
+  try {
+    await startPlugin(plugin.client);
+    await invoke(plugin.client, 'probes.context');
+    const callback = findHost(plugin.probe.lastContext as InvocationContext);
+    assert.ok(callback !== undefined);
+    const timedOut = await callback.invoke(InvocationContext.create({ timeout: 200 }), 'orders.get');
+    assert.deepEqual(!timedOut.outcome.ok && describeError(timedOut.outcome.error), {
+      code: 'KERNEL_TIMEOUT_001',
+      key: 'kernel.invocation.deadline_exceeded',
+      details: null,
+    });
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 200);
+    const cancelled = await callback.invoke(
+      InvocationContext.create({ signal: controller.signal, timeout: 30_000 }),
+      'orders.get',
+    );
+    assert.deepEqual(!cancelled.outcome.ok && describeError(cancelled.outcome.error), {
+      code: 'KERNEL_CANCELLED_001',
+      key: 'kernel.invocation.cancelled',
+      details: null,
+    });
+    assert.equal(host.received.length, 2, 'both callbacks were sent');
   } finally {
     await plugin.close();
     host.close();

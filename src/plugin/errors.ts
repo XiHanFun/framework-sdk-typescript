@@ -185,8 +185,12 @@ export function sessionInvalid(): ErrorInfo {
  */
 export type CallbackRpc = 'invoke' | 'publish';
 
-/** gRPC 状态码里映射表单独列出的几个（数值与 `@grpc/grpc-js` 的 `status` 相同；这里单列，换算不必加载 gRPC） */
-const GrpcCode = Object.freeze({
+/**
+ * gRPC 状态码里映射表单独列出的几个（数值与 `@grpc/grpc-js` 的 `status` 相同；这里单列，换算不必加载 gRPC）
+ *
+ * @internal
+ */
+export const GrpcCode = Object.freeze({
   Cancelled: 1,
   InvalidArgument: 3,
   DeadlineExceeded: 4,
@@ -195,13 +199,6 @@ const GrpcCode = Object.freeze({
   Unavailable: 14,
   Unauthenticated: 16,
 } as const);
-
-/**
- * gRPC 状态码 `Unavailable`：连接失败按它映射
- *
- * @internal
- */
-export const grpcUnavailable = GrpcCode.Unavailable;
 
 /**
  * 插件一侧回调的 gRPC 失败映射成错误（invocation.md §5 的表，向量 spec/conformance/vectors/plugin/callback-status.json）

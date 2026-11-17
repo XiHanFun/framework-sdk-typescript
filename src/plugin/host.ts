@@ -15,7 +15,7 @@ import {
 import {
   type CallbackRpc,
   callbackDenied,
-  grpcUnavailable,
+  GrpcCode,
   hostUnavailable,
   mapCallbackStatus,
   PluginReason,
@@ -95,7 +95,8 @@ export function attachHost(context: InvocationContext, host: Host): void {
  * 回调以 `PLUGINS_UNAVAILABLE_001` + `plugins.host.unavailable`（`reason` 为 `no supported callback endpoint`）失败。
  * 发出之前在本地按宿主的顺序核对，与宿主给出同样的错误、不合即不发请求：所需权限既在清单 `permissions` 里、也在
  * `Configure` 的 `granted_permissions` 里，否则 `plugins.callback.denied`；上下文的 `xihan.tenant` 必须是插件此刻正在处理的
- * 某个调用或投递的租户，否则 `plugins.callback.tenant_denied`。每次回调都在元数据 `xihan-plugin-session` 里带会话令牌，
+ * 某个调用或投递的租户，否则 `plugins.callback.tenant_denied`；最后，上下文的截止时间已过或已被取消时也不发请求，结果与
+ * 映射表的 `DeadlineExceeded`、「`Cancelled`，取消信号已触发」两行相同。每次回调都在元数据 `xihan-plugin-session` 里带会话令牌，
  * 宿主以插件身份执行（主体 ID 为清单 ID）。连接是惰性的，第一次回调才建立
  */
 export class Host {
@@ -131,8 +132,8 @@ export class Host {
    * 经宿主的完整管道调用一个操作（`Host.Invoke`，需要权限 `capability:kernel.pipeline`）
    *
    * @remarks
-   * 元数据取自上下文：traceparent、截止时间（UTC、七位小数）与已登记的 Baggage，`trace_state` 为空；gRPC 调用的截止时间与
-   * 上下文相同，上下文的信号触发即取消回调。业务失败是宿主返回的 `Status.error`，按 invocation.md §3 的读入规则还原；
+   * 元数据取自上下文：按 RFC-0003 写出的 traceparent、截止时间（UTC、七位小数）与已登记的 Baggage，`trace_state` 为空；
+   * gRPC 调用的截止时间与上下文相同，调用方取消即取消回调。业务失败是宿主返回的 `Status.error`，按 invocation.md §3 的读入规则还原；
    * gRPC 失败按 invocation.md §5 的表换成原语层错误
    *
    * @param payload - 请求的 JSON 文本或 UTF-8 字节；缺省为空，宿主按 `{}` 处理
@@ -210,10 +211,11 @@ export class Host {
   }
 
   /**
-   * 发出之前的本地核对：没有可用的端点，然后按宿主的顺序核对权限与租户（invocation.md §5），最后是已经关闭、
-   * 上下文已经中止；都通过时为 `undefined`
+   * 发出之前的本地核对（invocation.md §5），依次：① 有没有可用的回调端点；按宿主的顺序 ② 权限、③ 上下文的租户；
+   * ④ 上下文的截止时间已过或已被取消，结果与映射表相应的一行相同（截止时间已过按 `DeadlineExceeded`，已被取消按
+   * 「`Cancelled`，取消信号已触发」）。客户端已经关闭的按连不上宿主。都通过时为 `undefined`
    */
-  #refusal(context: InvocationContext, permission: string): ErrorInfo | undefined {
+  #refusal(context: InvocationContext, rpc: CallbackRpc, operation: string, permission: string): ErrorInfo | undefined {
     if (this.endpoint === undefined) {
       return hostUnavailable(this.#pluginId, PluginReason.NoCallbackEndpoint);
     }
@@ -224,14 +226,20 @@ export class Host {
     if (tenant !== undefined && !this.#tenants.has(tenant)) {
       return tenantDenied(this.#pluginId, tenant);
     }
-    if (this.#closed) {
-      return hostUnavailable(this.#pluginId, statusReason(grpcUnavailable, 'the host client is closed'));
+    const cancelled = context.signal.aborted;
+    if (context.isExpired(Date.now())) {
+      return mapCallbackStatus(rpc, GrpcCode.DeadlineExceeded, '', cancelled, this.#pluginId, operation);
     }
-    // 已经中止的调用不再发出：发出去 gRPC 也只会立即以 Cancelled 或 DeadlineExceeded 结束
-    return context.cancellation;
+    if (cancelled) {
+      return mapCallbackStatus(rpc, GrpcCode.Cancelled, '', true, this.#pluginId, operation);
+    }
+    if (this.#closed) {
+      return hostUnavailable(this.#pluginId, statusReason(GrpcCode.Unavailable, 'the host client is closed'));
+    }
+    return undefined;
   }
 
-  /** 发出一次一元回调：带会话令牌与截止时间，上下文的信号触发即取消 */
+  /** 发出一次一元回调：带会话令牌与截止时间，调用方取消即取消回调 */
   #call<T>(
     context: InvocationContext,
     rpc: CallbackRpc,
@@ -244,7 +252,7 @@ export class Host {
       done: (error: ServiceError | null, value: T) => void,
     ) => { cancel(): void },
   ): Promise<Result<T>> {
-    const refusal = this.#refusal(context, permission);
+    const refusal = this.#refusal(context, rpc, operation, permission);
     if (refusal !== undefined) {
       return Promise.resolve(Result.fail(refusal));
     }
@@ -259,7 +267,8 @@ export class Host {
           resolve(Result.ok(value));
           return;
         }
-        // 连接失败 grpc-js 也报 Unavailable；取消看的是回调上下文自己的信号（invocation.md §5）
+        // 只按表映射，不另按时钟或令牌改写结果：连接失败 grpc-js 报 Unavailable，到了截止时间报 DeadlineExceeded，
+        // Cancelled 的两行看的是回调上下文自己的取消信号（invocation.md §5）
         const failure = mapCallbackStatus(
           rpc,
           error.code,
@@ -270,7 +279,13 @@ export class Host {
         );
         resolve(Result.fail(failure));
       });
-      const abort = () => call.cancel();
+      // 调用方取消时取消回调；截止时间到了交给 gRPC 自己的截止时间（与上下文的相同），它报 DeadlineExceeded，
+      // 这里抢先取消会让 grpc-js 报成 Cancelled
+      const abort = () => {
+        if (!context.isExpired(Date.now())) {
+          call.cancel();
+        }
+      };
       context.signal.addEventListener('abort', abort, { once: true });
     });
   }
