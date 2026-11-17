@@ -6,10 +6,10 @@ import { join } from 'node:path';
 import { type Server, ServerCredentials } from '@grpc/grpc-js';
 
 import { ErrorCode, FrameworkError } from '../primitives/index.ts';
-import { EndpointNetwork, type PluginEndpoint } from './protocol.ts';
+import { EndpointNetwork, isEndpointWhitespace, type PluginEndpoint } from './protocol.ts';
 
-/** 回环地址加端口，端口可以是 0（由系统分配） */
-const loopbackListenPattern = /^(127\.0\.0\.1|\[::1\]):([0-9]{1,5})$/;
+/** 插件自己监听的回环 TCP 地址：只写 `127.0.0.1:<端口>`（handshake.md §2），端口可以是 0（由系统分配） */
+const loopbackListenPattern = /^127\.0\.0\.1:([0-9]{1,5})$/;
 
 /**
  * 本平台缺省的网络类型：Windows 用命名管道，其他系统用 Unix 域套接字
@@ -20,6 +20,21 @@ const loopbackListenPattern = /^(127\.0\.0\.1|\[::1\]):([0-9]{1,5})$/;
  */
 export function defaultNetwork(): EndpointNetwork {
   return process.platform === 'win32' ? EndpointNetwork.NamedPipe : EndpointNetwork.Unix;
+}
+
+/**
+ * 本平台上回调客户端（`@grpc/grpc-js`）能连的网络类型，按 handshake.md §4 选宿主回调端点时用
+ *
+ * @remarks
+ * 实测：Windows 上 Node 的 `net` 把路径交给 libuv 的命名管道，连得上 `npipe`、连不上 Unix 域套接字（`EACCES`）；
+ * 其他系统上连得上 `unix`，没有命名管道。回环 TCP 各平台都能连
+ *
+ * @internal
+ */
+export function callbackNetworks(): readonly EndpointNetwork[] {
+  return process.platform === 'win32'
+    ? [EndpointNetwork.NamedPipe, EndpointNetwork.Tcp]
+    : [EndpointNetwork.Unix, EndpointNetwork.Tcp];
 }
 
 /**
@@ -41,8 +56,11 @@ export interface BoundEndpoint {
  * - `unix`：没给地址时，套接字放进本进程新建的私有目录（`mkdtemp`：名字随机、权限 `0700`、只新建不复用，
  *   别人抢先建好的同名目录或指向别处的链接不会被拿来用），套接字文件绑定后收紧为 `0600`。
  * - `npipe`：没给地址时取随机的管道名；libuv 以第一个实例创建管道，同名管道已经存在即绑定失败，不会接上别人的管道。
- *   管道用 Windows 的缺省安全描述符：当前用户、管理员与 SYSTEM 可读写，其他用户只能只读打开，发不出请求。
- * - `tcp`：只绑定回环地址；没给地址时为 `127.0.0.1` 上系统分配的端口。
+ *   libuv 给不了访问控制表，管道用 Windows 的缺省安全描述符：当前用户、管理员与 SYSTEM 可读写，其他用户只能只读打开、
+ *   发不出请求，隔离与 TCP 一样靠会话令牌（handshake.md §4）。libuv 也不设 `PIPE_REJECT_REMOTE_CLIENTS`，
+ *   经网络打开管道的客户端同样按这个安全描述符判定、同样要会话令牌；要只接受本机连接时用 `tcp`。
+ * - `unix` 生成的路径含空白（临时目录含空白）时退到 `/tmp`，仍不行就改用回环 TCP：握手行的地址不能含空白。
+ * - `tcp`：只绑定 `127.0.0.1`（握手行只写 `127.0.0.1:<端口>`，handshake.md §2）；没给地址时端口由系统分配。
  *
  * @internal
  */
@@ -59,7 +77,12 @@ export async function bindEndpoint(
       let directory: string | undefined;
       let path = address;
       if (path === undefined) {
-        directory = mkdtempSync(join(tmpdir(), 'xihan-plugin-'));
+        // 自己生成的地址不能含空白，否则写不成握手行（handshake.md §2）：临时目录含空白时退到 /tmp，仍不行就用回环 TCP
+        const base = [tmpdir(), '/tmp'].find((candidate) => !hasWhitespace(candidate));
+        if (base === undefined) {
+          return bindEndpoint(server, EndpointNetwork.Tcp, undefined);
+        }
+        directory = mkdtempSync(join(base, 'xihan-plugin-'));
         // mkdtemp 已按 0700 创建；再设一次，不依赖 umask 与平台的缺省
         chmodSync(directory, 0o700);
         path = join(directory, 'plugin.sock');
@@ -90,12 +113,12 @@ export async function bindEndpoint(
     }
     case EndpointNetwork.Tcp: {
       const match = loopbackListenPattern.exec(address ?? '127.0.0.1:0');
-      if (match === null) {
-        throw invalid(`The tcp address '${address}' must be a loopback address with a port.`);
+      const requested = Number(match?.[1] ?? Number.NaN);
+      if (!(requested <= 65535)) {
+        throw invalid(`The tcp address '${address}' must be '127.0.0.1:<port>'.`);
       }
-      const host = match[1] ?? '127.0.0.1';
-      const port = await bind(server, `${host}:${match[2] ?? '0'}`);
-      return { endpoint: { network, address: `${host}:${port}` }, cleanup: () => {} };
+      const port = await bind(server, `127.0.0.1:${requested}`);
+      return { endpoint: { network, address: `127.0.0.1:${port}` }, cleanup: () => {} };
     }
     default:
       throw invalid(`The endpoint network '${String(network)}' is not supported.`);
@@ -117,6 +140,16 @@ function bind(server: Server, target: string): Promise<number> {
       }
     });
   });
+}
+
+/** 路径里有没有握手行所说的空白 */
+function hasWhitespace(text: string): boolean {
+  for (let index = 0; index < text.length; index += 1) {
+    if (isEndpointWhitespace(text.charCodeAt(index))) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function invalid(message: string): FrameworkError {

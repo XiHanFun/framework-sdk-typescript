@@ -24,9 +24,15 @@ const allCases = [
   'refusal',
   'session',
   'lifecycle',
+  'order',
   'unknown-operation',
   'declared-operations',
+  'unavailable',
   'event',
+  'unsubscribed',
+  'stream',
+  'configuration',
+  'stop-early',
   'stdin',
 ];
 

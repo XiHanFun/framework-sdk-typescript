@@ -119,6 +119,7 @@ export function echoOptions(): PluginOptions {
     }),
     request: RelayRequest,
     handler: async (context, request) => {
+      // 插件运行时总在上下文里放入宿主客户端；宿主没有给出可用的回调端点时回调以 plugins.host.unavailable 失败
       const host = findHost(context);
       if (host === undefined) {
         return Result.fail(ErrorInfo.unavailable(EchoErrorCode.HostUnavailable, EchoMessageKey.HostUnavailable));
@@ -167,15 +168,16 @@ export function echoOptions(): PluginOptions {
     ],
     hooks: {
       configure: (configuration: PluginConfiguration) => {
-        const value = configuration.section.greeting;
-        if (value !== undefined && typeof value !== 'string') {
+        // 成员名不区分大小写（宿主的配置源是 IConfiguration）：Greeting 与 greeting 是同一项
+        const value = configuration.values.get('greeting');
+        if (value !== undefined && value !== null && typeof value !== 'string') {
           return Result.fail(
             ErrorInfo.validation(EchoErrorCode.InvalidConfiguration, EchoMessageKey.InvalidConfiguration, {
               reason: "'greeting' must be a string",
             }),
           );
         }
-        greeting = value === '' ? undefined : value;
+        greeting = configuration.values.string('greeting') || undefined;
         return Result.success();
       },
       health: () => ({

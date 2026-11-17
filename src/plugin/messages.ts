@@ -1,11 +1,12 @@
 import { MessageCatalog } from '../primitives/index.ts';
 
 /**
- * 插件运行时自己的消息目录：10 种区域（RFC-0010），键与参数同 {@link PluginMessageKey}
+ * 插件运行时的消息目录：10 种区域（RFC-0010），键、参数与 en-US 模板照 plugin/invocation.md §8 与
+ * spec/conformance/vectors/plugin/plugin-messages.json，键名见 {@link PluginMessageKey}
  *
  * @remarks
- * 模板逐字取自参考实现插件协议包的语言文件；宿主收到这些错误时按消息键用自己的目录翻译，
- * 这里的文案只用于插件这一侧的 `text` 与日志
+ * 模板逐字取自参考实现插件协议包的语言文件。宿主有这些键的目录，SDK 不随握手发送它们（handshake.md §3 第 6 条）：
+ * 写给宿主的错误只带键与参数、`text` 留空，由宿主按调用方的语言翻译；这里的文案只用于插件这一侧的本地渲染与日志
  */
 export const pluginTemplates: Readonly<Record<string, Readonly<Record<string, string>>>> = Object.freeze({
   'en-US': Object.freeze({
@@ -14,6 +15,9 @@ export const pluginTemplates: Readonly<Record<string, Readonly<Record<string, st
     'plugins.callback.tenant_denied':
       "Plugin '{id}' may not act in tenant '{tenant}': a callback can only carry the tenant of a call the host has handed to the plugin.",
     'plugins.callback.session_invalid': 'The plugin session token is missing or invalid.',
+    'plugins.event.unsubscribed':
+      "Plugin '{id}' has no subscription for topic '{topic}', type '{type}' and mode '{mode}'.",
+    'plugins.host.unavailable': "Plugin '{id}' cannot reach the host: {reason}",
     'plugins.process.failed': "Plugin '{id}' failed during {phase}: {reason}",
     'plugins.process.unavailable': "Plugin '{id}' is not available (state: {state}).",
   }),
@@ -22,6 +26,8 @@ export const pluginTemplates: Readonly<Record<string, Readonly<Record<string, st
     'plugins.callback.tenant_denied':
       "插件 '{id}' 不能在租户 '{tenant}' 中执行：回调只能带宿主交给插件处理的调用的租户。",
     'plugins.callback.session_invalid': '插件会话令牌缺失或无效。',
+    'plugins.event.unsubscribed': "插件 '{id}' 没有主题 '{topic}'、类型 '{type}'、方式 '{mode}' 的订阅。",
+    'plugins.host.unavailable': "插件 '{id}' 连不上宿主：{reason}",
     'plugins.process.failed': "插件 '{id}' 在 {phase} 阶段失败：{reason}",
     'plugins.process.unavailable': "插件 '{id}' 不可用（状态：{state}）。",
   }),
@@ -30,6 +36,8 @@ export const pluginTemplates: Readonly<Record<string, Readonly<Record<string, st
     'plugins.callback.tenant_denied':
       "外掛 '{id}' 不能在租用戶 '{tenant}' 中執行：回呼只能帶主機交給外掛處理的呼叫的租用戶。",
     'plugins.callback.session_invalid': '外掛工作階段權杖缺失或無效。',
+    'plugins.event.unsubscribed': "外掛 '{id}' 沒有主題 '{topic}'、類型 '{type}'、方式 '{mode}' 的訂閱。",
+    'plugins.host.unavailable': "外掛 '{id}' 連不上主機：{reason}",
     'plugins.process.failed': "外掛 '{id}' 在 {phase} 階段失敗：{reason}",
     'plugins.process.unavailable': "外掛 '{id}' 無法使用（狀態：{state}）。",
   }),
@@ -39,6 +47,9 @@ export const pluginTemplates: Readonly<Record<string, Readonly<Record<string, st
     'plugins.callback.tenant_denied':
       "プラグイン '{id}' はテナント '{tenant}' で実行できません。コールバックが持てるのは、ホストがプラグインに渡した呼び出しのテナントだけです。",
     'plugins.callback.session_invalid': 'プラグインのセッショントークンがないか無効です。',
+    'plugins.event.unsubscribed':
+      "プラグイン '{id}' には、トピック '{topic}'、タイプ '{type}'、モード '{mode}' の購読がありません。",
+    'plugins.host.unavailable': "プラグイン '{id}' はホストに接続できません: {reason}",
     'plugins.process.failed': "プラグイン '{id}' は {phase} で失敗しました: {reason}",
     'plugins.process.unavailable': "プラグイン '{id}' は利用できません (状態: {state})。",
   }),
@@ -48,6 +59,8 @@ export const pluginTemplates: Readonly<Record<string, Readonly<Record<string, st
     'plugins.callback.tenant_denied':
       "플러그인 '{id}'은(는) 테넌트 '{tenant}'에서 실행할 수 없습니다. 콜백에는 호스트가 플러그인에 맡긴 호출의 테넌트만 담을 수 있습니다.",
     'plugins.callback.session_invalid': '플러그인 세션 토큰이 없거나 잘못되었습니다.',
+    'plugins.event.unsubscribed': "플러그인 '{id}'에는 토픽 '{topic}', 유형 '{type}', 방식 '{mode}'의 구독이 없습니다.",
+    'plugins.host.unavailable': "플러그인 '{id}'이(가) 호스트에 연결할 수 없습니다: {reason}",
     'plugins.process.failed': "플러그인 '{id}'이(가) {phase} 단계에서 실패했습니다: {reason}",
     'plugins.process.unavailable': "플러그인 '{id}'을(를) 사용할 수 없습니다 (상태: {state}).",
   }),
@@ -57,6 +70,9 @@ export const pluginTemplates: Readonly<Record<string, Readonly<Record<string, st
     'plugins.callback.tenant_denied':
       "Das Plugin '{id}' darf nicht im Mandanten '{tenant}' handeln: Ein Rückruf kann nur den Mandanten eines Aufrufs tragen, den der Host an das Plugin übergeben hat.",
     'plugins.callback.session_invalid': 'Das Sitzungstoken des Plugins fehlt oder ist ungültig.',
+    'plugins.event.unsubscribed':
+      "Plugin '{id}' hat kein Abonnement für das Thema '{topic}', den Typ '{type}' und den Modus '{mode}'.",
+    'plugins.host.unavailable': "Plugin '{id}' kann den Host nicht erreichen: {reason}",
     'plugins.process.failed': "Plugin '{id}' ist während {phase} fehlgeschlagen: {reason}",
     'plugins.process.unavailable': "Plugin '{id}' ist nicht verfügbar (Zustand: {state}).",
   }),
@@ -66,6 +82,9 @@ export const pluginTemplates: Readonly<Record<string, Readonly<Record<string, st
     'plugins.callback.tenant_denied':
       "El plugin '{id}' no puede actuar en el inquilino '{tenant}': una devolución de llamada solo puede llevar el inquilino de una llamada que el host haya entregado al plugin.",
     'plugins.callback.session_invalid': 'El token de sesión del plugin falta o no es válido.',
+    'plugins.event.unsubscribed':
+      "El plugin '{id}' no tiene ninguna suscripción para el tema '{topic}', el tipo '{type}' y el modo '{mode}'.",
+    'plugins.host.unavailable': "El plugin '{id}' no puede conectar con el host: {reason}",
     'plugins.process.failed': "El plugin '{id}' falló durante {phase}: {reason}",
     'plugins.process.unavailable': "El plugin '{id}' no está disponible (estado: {state}).",
   }),
@@ -75,6 +94,9 @@ export const pluginTemplates: Readonly<Record<string, Readonly<Record<string, st
     'plugins.callback.tenant_denied':
       "Le plugin '{id}' ne peut pas agir dans le locataire '{tenant}' : un rappel ne peut porter que le locataire d'un appel que l'hôte a confié au plugin.",
     'plugins.callback.session_invalid': 'Le jeton de session du plugin est absent ou invalide.',
+    'plugins.event.unsubscribed':
+      "Le plugin '{id}' n'a aucun abonnement pour le sujet '{topic}', le type '{type}' et le mode '{mode}'.",
+    'plugins.host.unavailable': "Le plugin '{id}' ne peut pas joindre l'hôte : {reason}",
     'plugins.process.failed': "Le plugin '{id}' a échoué pendant {phase} : {reason}",
     'plugins.process.unavailable': "Le plugin '{id}' est indisponible (état : {state}).",
   }),
@@ -84,6 +106,9 @@ export const pluginTemplates: Readonly<Record<string, Readonly<Record<string, st
     'plugins.callback.tenant_denied':
       "O plugin '{id}' não pode agir no locatário '{tenant}': um retorno de chamada só pode levar o locatário de uma chamada que o host entregou ao plugin.",
     'plugins.callback.session_invalid': 'O token de sessão do plugin está ausente ou é inválido.',
+    'plugins.event.unsubscribed':
+      "O plugin '{id}' não tem assinatura para o tópico '{topic}', o tipo '{type}' e o modo '{mode}'.",
+    'plugins.host.unavailable': "O plugin '{id}' não consegue alcançar o host: {reason}",
     'plugins.process.failed': "O plugin '{id}' falhou durante {phase}: {reason}",
     'plugins.process.unavailable': "O plugin '{id}' não está disponível (estado: {state}).",
   }),
@@ -93,6 +118,9 @@ export const pluginTemplates: Readonly<Record<string, Readonly<Record<string, st
     'plugins.callback.tenant_denied':
       "Плагин '{id}' не может действовать в арендаторе '{tenant}': обратный вызов может нести только арендатора вызова, переданного хостом плагину.",
     'plugins.callback.session_invalid': 'Токен сеанса плагина отсутствует или недопустим.',
+    'plugins.event.unsubscribed':
+      "У плагина '{id}' нет подписки на тему '{topic}' с типом '{type}' и режимом '{mode}'.",
+    'plugins.host.unavailable': "Плагин '{id}' не может связаться с хостом: {reason}",
     'plugins.process.failed': "Плагин '{id}' завершился ошибкой на этапе {phase}: {reason}",
     'plugins.process.unavailable': "Плагин '{id}' недоступен (состояние: {state}).",
   }),

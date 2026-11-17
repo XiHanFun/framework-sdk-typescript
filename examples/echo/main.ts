@@ -12,8 +12,7 @@ import { echoOptions } from './echo.ts';
 
 try {
   await servePlugin(echoOptions());
-} catch (error) {
-  // 配置错误（清单不合法、声明与清单不符、缺环境变量）在监听之前抛出：写 stderr 并以非零码退出
-  process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+} catch {
+  // 配置错误（清单不合法、声明与清单不符、缺环境变量）在监听之前抛出，运行时已在 stderr 记了一条 error 日志：以非零码退出
   process.exitCode = 1;
 }

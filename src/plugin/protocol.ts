@@ -20,7 +20,7 @@ export const PluginEnvironment = Object.freeze({
   Primitives: 'XIHAN_PLUGIN_PRIMITIVES',
   /** 本次启动的会话令牌 */
   Session: 'XIHAN_PLUGIN_SESSION',
-  /** 宿主回调端点 `<network> <address>` */
+  /** 宿主回调端点：一个或多个 `<network> <address>`，按宿主的偏好排序、以 `;` 分隔（handshake.md §4） */
   HostAddress: 'XIHAN_PLUGIN_HOST_ADDRESS',
   /** 实例 ID */
   Instance: 'XIHAN_PLUGIN_INSTANCE',
@@ -34,25 +34,33 @@ export const PluginEnvironment = Object.freeze({
 export const PluginErrorCode = Object.freeze({
   /** 回调被拒：会话令牌无效、权限未声明或未授予、带了宿主没有交给插件的租户 */
   CallbackDenied: 'PLUGINS_DENIED_002',
-  /** 插件未就绪或正在停止，暂不接受调用 */
+  /** 插件不在可服务状态，或回调连不上宿主、没有可用的回调端点 */
   Unavailable: 'PLUGINS_UNAVAILABLE_001',
-  /** 配置、启动、停止或回调时的未预期失败 */
+  /** 生命周期或健康回调抛出、配置节不是 JSON 对象、对方写来的错误不合法、没有对应的 gRPC 状态 */
   Unexpected: 'PLUGINS_UNEXPECTED_001',
 } as const);
 
 /**
- * 插件运行时用到的消息键：与参考实现的插件协议目录同键同参数，文案见 {@link pluginMessages}
+ * SDK 运行时与宿主共用的消息键（plugin/invocation.md §8）：码、键与参数照 spec/conformance/vectors/plugin/plugin-messages.json，
+ * 文案见 {@link pluginMessages}
+ *
+ * @remarks
+ * `id` 一律是插件的清单 ID；错误的 `details` 就是这些参数，不另加成员
  */
 export const PluginMessageKey = Object.freeze({
-  /** 插件不可用，参数 `id`、`state` */
+  /** 插件不在可服务状态（`PLUGINS_UNAVAILABLE_001`），参数 `id`、`state` */
   Unavailable: 'plugins.process.unavailable',
-  /** 插件在某一步失败，参数 `id`、`phase`、`reason` */
+  /** 插件在某一步失败（`PLUGINS_UNEXPECTED_001`），参数 `id`、`phase`、`reason` */
   Failed: 'plugins.process.failed',
-  /** 回调所需的权限未声明或未授予，参数 `id`、`permission` */
+  /** 投递找不到订阅（`KERNEL_NOTFOUND_001`），参数 `id`、`topic`、`type`、`mode` */
+  Unsubscribed: 'plugins.event.unsubscribed',
+  /** 回调连不上宿主或没有可用的回调端点（`PLUGINS_UNAVAILABLE_001`），参数 `id`、`reason` */
+  HostUnavailable: 'plugins.host.unavailable',
+  /** 回调所需的权限未声明或未授予（`PLUGINS_DENIED_002`），参数 `id`、`permission` */
   CallbackDenied: 'plugins.callback.denied',
-  /** 回调带了宿主没有交给插件的租户，参数 `id`、`tenant` */
+  /** 回调带了宿主没有交给插件的租户（`PLUGINS_DENIED_002`），参数 `id`、`tenant` */
   TenantDenied: 'plugins.callback.tenant_denied',
-  /** 会话令牌缺失或无效，没有参数 */
+  /** 宿主拒绝了会话令牌（`PLUGINS_DENIED_002`），没有参数 */
   SessionInvalid: 'plugins.callback.session_invalid',
 } as const);
 
@@ -108,53 +116,171 @@ export const SubscriptionMode = Object.freeze({
  */
 export type SubscriptionMode = (typeof SubscriptionMode)[keyof typeof SubscriptionMode];
 
-/** 握手行文法（handshake.md §2），整串匹配 */
-const handshakeLinePattern = /^xihan-plugin\/1 (unix|tcp|npipe) (\S+)$/;
+/** 握手行格式版本 1 的前缀，含其后的一个空格（handshake.md §2） */
+const handshakeLinePrefix = `${PluginProtocol.handshakeLineVersion} `;
 
-/** TCP 的回环地址：`127.0.0.1:<port>` 或 `[::1]:<port>`，主机名不算（handshake.md §2） */
-const loopbackPattern = /^(?:127\.0\.0\.1|\[::1\]):[0-9]+$/;
+/** 端点允许的网络类型（handshake.md §2） */
+const endpointNetworks: readonly string[] = Object.values(EndpointNetwork);
 
 /** 主题文法（RFC-0009「信封」） */
 const topicPattern = /^[a-z0-9][a-z0-9._-]{0,127}$/;
 
 /**
- * 解析握手行；不合文法或 TCP 地址不是回环地址时为 `undefined`
+ * 判断一个 UTF-16 码元是不是握手行与回调端点所说的空白（handshake.md §2）
  *
  * @remarks
- * 文法 `^xihan-plugin/1 (unix|tcp|npipe) (\S+)$`，向量见 spec/conformance/vectors/plugin/handshake-lines.json
+ * U+0009–U+000D、U+0020、U+0085、U+00A0、U+1680、U+2000–U+200A、U+2028、U+2029、U+202F、U+205F、U+3000，
+ * 与 .NET 正则的 `\s` 相同。JavaScript 的 `\s` 不含 U+0085、却含 U+FEFF，不能直接用；这些字符都在基本平面里，
+ * 逐个码元比较与按码点比较结果相同
+ *
+ * @internal
+ */
+export function isEndpointWhitespace(unit: number): boolean {
+  return (
+    (unit >= 0x09 && unit <= 0x0d) ||
+    unit === 0x20 ||
+    unit === 0x85 ||
+    unit === 0xa0 ||
+    unit === 0x1680 ||
+    (unit >= 0x2000 && unit <= 0x200a) ||
+    unit === 0x2028 ||
+    unit === 0x2029 ||
+    unit === 0x202f ||
+    unit === 0x205f ||
+    unit === 0x3000
+  );
+}
+
+/** 文本里有没有握手行所说的空白 */
+function hasEndpointWhitespace(text: string): boolean {
+  for (let index = 0; index < text.length; index += 1) {
+    if (isEndpointWhitespace(text.charCodeAt(index))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * 解析去掉行尾之后的握手行 `xihan-plugin/1 <network> <address>`（handshake.md §2）；不合文法时为 `undefined`
+ *
+ * @remarks
+ * 前缀之后的部分同 {@link parseEndpoint}；文法整串匹配，结尾的换行不例外。
+ * 向量见 spec/conformance/vectors/plugin/handshake-lines.json
  */
 export function parseHandshakeLine(line: string): PluginEndpoint | undefined {
-  const match = handshakeLinePattern.exec(line);
-  if (match === null) {
-    return undefined;
-  }
-  const network = match[1] as EndpointNetwork;
-  const address = match[2] ?? '';
-  if (network === EndpointNetwork.Tcp && !loopbackPattern.test(address)) {
-    return undefined;
-  }
-  return { network, address };
+  return line.startsWith(handshakeLinePrefix) ? parseEndpoint(line.slice(handshakeLinePrefix.length)) : undefined;
 }
 
 /**
  * 写出握手行（不含结尾的换行）；写出的行总能按 {@link parseHandshakeLine} 读回
  *
- * @returns 握手行；端点写不成合法的行（地址含空白、TCP 地址不是回环地址）时为 `undefined`
+ * @returns 握手行；端点写不成合法的行（地址为空或含空白、TCP 地址不是回环地址加端口）时为 `undefined`
  */
 export function formatHandshakeLine(endpoint: PluginEndpoint): string | undefined {
-  const line = `${PluginProtocol.handshakeLineVersion} ${endpoint.network} ${endpoint.address}`;
+  const line = `${handshakeLinePrefix}${endpoint.network} ${endpoint.address}`;
   return parseHandshakeLine(line) === undefined ? undefined : line;
 }
 
 /**
- * 解析 `<network> <address>`（环境变量 `XIHAN_PLUGIN_HOST_ADDRESS` 的格式）；不合法时为 `undefined`
+ * 解析一个端点 `<network> <address>`（handshake.md §2）；不合法时为 `undefined`
+ *
+ * @remarks
+ * `network` 是 `unix`、`tcp` 或 `npipe`，与地址之间恰好一个空格；地址是一个或多个空白之外的字符（含非 ASCII 字母与 `;`）。
+ * `tcp` 的地址必须是回环地址加端口：IPv4 是 `127.0.0.0/8` 里四段、不带前导零的点分十进制，IPv6 只认 `[::1]`，
+ * 端口是 1–65535、不带正负号与前导零的十进制；主机名不算
  */
 export function parseEndpoint(text: string): PluginEndpoint | undefined {
   const separator = text.indexOf(' ');
   if (separator < 0) {
     return undefined;
   }
-  return parseHandshakeLine(`${PluginProtocol.handshakeLineVersion} ${text}`);
+  const network = text.slice(0, separator);
+  const address = text.slice(separator + 1);
+  if (!endpointNetworks.includes(network) || address === '' || hasEndpointWhitespace(address)) {
+    return undefined;
+  }
+  if (network === EndpointNetwork.Tcp && !isLoopbackAddress(address)) {
+    return undefined;
+  }
+  return { network: network as EndpointNetwork, address };
+}
+
+/**
+ * 解析宿主回调端点列表 `XIHAN_PLUGIN_HOST_ADDRESS`（handshake.md §4）；不合法时为 `undefined`
+ *
+ * @remarks
+ * 文法 `^(unix|tcp|npipe) <地址>(;(unix|tcp|npipe) <地址>)*\z`：每项同 {@link parseEndpoint} 且地址不含 `;`，
+ * 任何一项不合法整个值就不合法，空串也不合法。向量见 spec/conformance/vectors/plugin/host-addresses.json
+ */
+export function parseHostAddresses(value: string): readonly PluginEndpoint[] | undefined {
+  const endpoints: PluginEndpoint[] = [];
+  // 按 ; 切开后地址里自然没有 ;；开头、结尾或连续的 ; 切出的空项在 parseEndpoint 里不合法
+  for (const part of value.split(';')) {
+    const endpoint = parseEndpoint(part);
+    if (endpoint === undefined) {
+      return undefined;
+    }
+    endpoints.push(endpoint);
+  }
+  return endpoints;
+}
+
+/**
+ * 按 handshake.md §4 选回调端点：值合法时按顺序取第一个网络类型在 `supported` 里的项
+ *
+ * @returns 选中的端点；变量缺失（`undefined`）、不合法或没有可用的项时为 `undefined`，这时回调以
+ * `PLUGINS_UNAVAILABLE_001` + `plugins.host.unavailable` 失败、不发请求
+ */
+export function selectHostEndpoint(
+  value: string | undefined,
+  supported: readonly EndpointNetwork[],
+): PluginEndpoint | undefined {
+  const endpoints = value === undefined ? undefined : parseHostAddresses(value);
+  return endpoints?.find((endpoint) => supported.includes(endpoint.network));
+}
+
+/** tcp 端点的地址是不是回环地址加端口（handshake.md §2） */
+function isLoopbackAddress(address: string): boolean {
+  const separator = address.lastIndexOf(':');
+  if (separator < 0) {
+    return false;
+  }
+  const port = decimal(address.slice(separator + 1), 65535);
+  if (port === undefined || port === 0) {
+    return false;
+  }
+  const host = address.slice(0, separator);
+  if (host === '[::1]') {
+    return true;
+  }
+  // 只认四段写法：127.1、0177.0.0.1、2130706433、0x7f.0.0.1 这些操作系统也接受的写法一律不合法
+  const segments = host.split('.');
+  return (
+    segments.length === 4 &&
+    segments[0] === '127' &&
+    segments.slice(1).every((segment) => decimal(segment, 255) !== undefined)
+  );
+}
+
+/** 读不带正负号与前导零的十进制数（`0` 本身可以），只认 ASCII 数字；不合写法或超过 `limit` 时为 `undefined` */
+function decimal(text: string, limit: number): number | undefined {
+  if (text === '' || (text.length > 1 && text.startsWith('0'))) {
+    return undefined;
+  }
+  let value = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    const digit = text.charCodeAt(index) - 0x30;
+    if (digit < 0 || digit > 9) {
+      return undefined;
+    }
+    value = value * 10 + digit;
+    // 逐位比较上限：过长的数字不会失去精度
+    if (value > limit) {
+      return undefined;
+    }
+  }
+  return value;
 }
 
 /**
