@@ -1,18 +1,59 @@
 {
-  "name": "framework-sdk-typescript",
+  "name": "xihan-framework",
   "version": "0.1.0",
-  "private": true,
-  "description": "XiHan Framework SDK for TypeScript 的 pnpm 工作区",
+  "description": "XiHan Framework 的 TypeScript SDK：原语、清单、调用上下文、管道与操作契约",
   "license": "MIT",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/XiHanFun/framework-sdk-typescript.git"
+  },
+  "homepage": "https://framework.docs.xihanfun.com",
+  "exports": {
+    "./primitives": {
+      "xihan-source": "./src/primitives/index.ts",
+      "types": "./dist/primitives/index.d.ts",
+      "default": "./dist/primitives/index.js"
+    },
+    "./manifest": {
+      "xihan-source": "./src/manifest/index.ts",
+      "types": "./dist/manifest/index.d.ts",
+      "default": "./dist/manifest/index.js"
+    },
+    "./manifest/node": {
+      "xihan-source": "./src/manifest/node.ts",
+      "types": "./dist/manifest/node.d.ts",
+      "default": "./dist/manifest/node.js"
+    },
+    "./invocation": {
+      "xihan-source": "./src/invocation/index.ts",
+      "types": "./dist/invocation/index.d.ts",
+      "default": "./dist/invocation/index.js"
+    },
+    "./pipeline": {
+      "xihan-source": "./src/pipeline/index.ts",
+      "types": "./dist/pipeline/index.d.ts",
+      "default": "./dist/pipeline/index.js"
+    },
+    "./operation": {
+      "xihan-source": "./src/operation/index.ts",
+      "types": "./dist/operation/index.d.ts",
+      "default": "./dist/operation/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "!dist/.tsbuildinfo"
+  ],
+  "sideEffects": false,
   "packageManager": "pnpm@11.22.0",
   "engines": {
-    "node": ">=24"
+    "node": ">=22"
   },
   "scripts": {
     "build": "tsc -b",
     "typecheck": "tsc -b && tsc -p tsconfig.test.json",
-    "test": "node --conditions=xihan-source --test \"packages/*/test/*.test.ts\"",
+    "test": "node --conditions=xihan-source --test \"test/*.test.ts\"",
     "check": "biome check .",
     "format": "biome check --write ."
   },

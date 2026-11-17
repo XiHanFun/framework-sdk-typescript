@@ -6,7 +6,7 @@ import {
   isBaggageKeyRegistered,
   isBaggageKeyWellFormed,
   isBaggageValueAcceptable,
-} from '@xihan-framework/primitives';
+} from '../primitives/index.ts';
 
 import { formatTraceParent, isSpanId, isTraceId, newSpanId, newTraceId, parseTraceParent } from './trace.ts';
 

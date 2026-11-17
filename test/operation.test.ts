@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 
-import { InvocationContext, InvocationMessageKey } from '@xihan-framework/invocation';
+import { InvocationContext, InvocationMessageKey } from 'xihan-framework/invocation';
 import {
   BuiltInStep,
   defineContract,
@@ -21,8 +21,8 @@ import {
   RequestDecodeError,
   RequestShape,
   type RequestShapeType,
-} from '@xihan-framework/operation';
-import { middleware, PipelineBuilder, PipelineErrorCode, Placement } from '@xihan-framework/pipeline';
+} from 'xihan-framework/operation';
+import { middleware, PipelineBuilder, PipelineErrorCode, Placement } from 'xihan-framework/pipeline';
 import {
   BaggageKey,
   ErrorCode,
@@ -37,7 +37,7 @@ import {
   Result,
   readJsonText,
   Stability,
-} from '@xihan-framework/primitives';
+} from 'xihan-framework/primitives';
 
 interface CreateOrder {
   readonly quantity?: number;
@@ -418,7 +418,7 @@ test('登记表容量 10000，按 ID 升序列出', () => {
 });
 
 test('操作错误的码、键与参数与内核错误向量一致', async () => {
-  const url = new URL('../../../spec/conformance/vectors/primitives/kernel-messages.json', import.meta.url);
+  const url = new URL('../spec/conformance/vectors/primitives/kernel-messages.json', import.meta.url);
   const { messages } = JSON.parse(readFileSync(url, 'utf8')) as {
     messages: { code: string; key: string; arguments: string[]; template: string }[];
   };
@@ -738,7 +738,7 @@ const vectorShapes = {
 };
 
 test('载荷的解码遵循 payload-reasons.json', async () => {
-  const url = new URL('../../../spec/conformance/vectors/operations/payload-reasons.json', import.meta.url);
+  const url = new URL('../spec/conformance/vectors/operations/payload-reasons.json', import.meta.url);
   const vectors = JSON.parse(readFileSync(url, 'utf8')) as {
     requests: Record<keyof typeof vectorShapes, string>;
     cases: { name: string; request: keyof typeof vectorShapes; payload: string; reason: string | null }[];

@@ -1,4 +1,4 @@
-import { ErrorCode, FrameworkError, isStability, Stability } from '@xihan-framework/primitives';
+import { ErrorCode, FrameworkError, isStability, Stability } from '../primitives/index.ts';
 
 /**
  * 内核登记的操作错误码

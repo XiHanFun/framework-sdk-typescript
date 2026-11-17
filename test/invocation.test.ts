@@ -15,8 +15,8 @@ import {
   newSpanId,
   newTraceId,
   parseTraceParent,
-} from '@xihan-framework/invocation';
-import { BaggageKey, ErrorCode, FrameworkError } from '@xihan-framework/primitives';
+} from 'xihan-framework/invocation';
+import { BaggageKey, ErrorCode, FrameworkError } from 'xihan-framework/primitives';
 
 /** 等待信号中止；用一个会保持进程存活的定时器兜底，避免测试在定时器触发前退出 */
 async function aborted(signal: AbortSignal, within = 2000): Promise<void> {
@@ -177,7 +177,7 @@ test('W3C traceparent 的解析', () => {
 });
 
 test('traceparent 的解析与写出遵循向量：只认版本 00，标志只写采样位', () => {
-  const url = new URL('../../../spec/conformance/vectors/primitives/trace-context.json', import.meta.url);
+  const url = new URL('../spec/conformance/vectors/primitives/trace-context.json', import.meta.url);
   const vectors = JSON.parse(readFileSync(url, 'utf8')) as {
     parse: { valid: { text: string; traceId: string; spanId: string; sampled: boolean }[]; invalid: string[] };
     format: { traceId: string; spanId: string; sampled: boolean | null; text: string }[];
@@ -209,7 +209,7 @@ test('traceparent 的解析与写出遵循向量：只认版本 00，标志只�
 });
 
 test('外部输入的 Baggage 丢弃不合的成员，程序内逐项派生给出不合的值是编程错误，幂等键除外', () => {
-  const url = new URL('../../../spec/conformance/vectors/primitives/baggage-keys.json', import.meta.url);
+  const url = new URL('../spec/conformance/vectors/primitives/baggage-keys.json', import.meta.url);
   const { values } = JSON.parse(readFileSync(url, 'utf8')) as {
     values: { acceptable: string[]; unacceptable: string[] };
   };
@@ -270,7 +270,7 @@ test('把任意取消信号翻译成原语层错误', () => {
 });
 
 test('上下文的错误码与消息键与内核错误向量一致', () => {
-  const url = new URL('../../../spec/conformance/vectors/primitives/kernel-messages.json', import.meta.url);
+  const url = new URL('../spec/conformance/vectors/primitives/kernel-messages.json', import.meta.url);
   const { messages } = JSON.parse(readFileSync(url, 'utf8')) as {
     messages: { code: string; key: string; arguments: string[]; template: string }[];
   };

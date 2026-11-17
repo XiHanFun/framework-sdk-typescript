@@ -2,7 +2,7 @@
  * 在 Node 里读取清单文件
  *
  * @remarks
- * 单独的子路径 `@xihan-framework/manifest/node`：主入口不引用 `node:fs`，浏览器与打包器里也能用
+ * 单独的子路径 `xihan-framework/manifest/node`：主入口不引用 `node:fs`，浏览器与打包器里也能用
  *
  * @packageDocumentation
  */
@@ -10,7 +10,7 @@
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 
-import { ErrorInfo, Result } from '@xihan-framework/primitives';
+import { ErrorInfo, Result } from '../primitives/index.ts';
 
 import { type Manifest, ManifestErrorCode, ManifestMessageKey, readManifest } from './manifest.ts';
 

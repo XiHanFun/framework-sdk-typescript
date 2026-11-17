@@ -65,7 +65,7 @@ import {
   typedId,
   validateErrorCode,
   writeJson,
-} from '@xihan-framework/primitives';
+} from 'xihan-framework/primitives';
 
 /**
  * 直接读取规范子模块里的一致性向量，不复制向量文件
@@ -74,7 +74,7 @@ import {
  * 用本 SDK 的 parseJson 读：向量里的数字按值模型（9007199254740993 是整数，2.0 与 -0.0 是浮点），JSON.parse 分不出
  */
 function vector<T>(name: string): T {
-  const url = new URL(`../../../spec/conformance/vectors/primitives/${name}`, import.meta.url);
+  const url = new URL(`../spec/conformance/vectors/primitives/${name}`, import.meta.url);
   return parseJson(readFileSync(url)) as unknown as T;
 }
 

@@ -3,23 +3,23 @@
 [XiHan Framework Spec](https://github.com/XiHanFun/framework-spec) 的 TypeScript 实现：原语层、清单、调用上下文、管道与操作契约。ADR-0004 把 TypeScript 定为 Go 之后的第二个 SDK。形状与语义以 [framework-sdk-go](https://github.com/XiHanFun/framework-sdk-go) 的同名包为参照，参考实现是 .NET（[XiHan.Framework](https://github.com/XiHanFun/XiHan.Framework)）。规范以 submodule 放在 `spec/`，一致性由规范仓库的向量验证。
 
 ```bash
-pnpm add @xihan-framework/primitives @xihan-framework/invocation @xihan-framework/pipeline @xihan-framework/operation
+pnpm add xihan-framework
 ```
 
-包还没有发布到 npm，发布前在本仓库的工作区里使用。全部是 ESM，运行时零第三方依赖，只用语言与平台内建的能力（`AbortSignal`、Web Crypto、`TextDecoder`、`Intl`）；除 `@xihan-framework/manifest/node` 外不引用 Node 专有模块，浏览器里也能用。
+整个 SDK 是一个 npm 包 `xihan-framework`（与 crates.io、PyPI 上的包同名），各模块按子路径导入（`xihan-framework/operation`），没有根入口。还没有发布到 npm，发布前在本仓库里使用。全部是 ESM，运行时零第三方依赖，只用语言与平台内建的能力（`AbortSignal`、Web Crypto、`TextDecoder`、`Intl`）；除 `xihan-framework/manifest/node` 外不引用 Node 专有模块，浏览器里也能用。
 
-| 包 | 内容 | 规范 |
+| 子路径 | 内容 | 规范 |
 | --- | --- | --- |
-| `@xihan-framework/primitives` | `ErrorInfo` / 错误码、`Result<T>`、`Maybe<T>`、`TypedId<Tag, V>`、`LifecycleState`、`PipelineStage`、`Stability`、Baggage 键、消息键与模板、`MessageCatalog`、`FrameworkError` | RFC-0001、RFC-0010、`conventions/` |
-| `@xihan-framework/manifest` | `xihan.manifest.json` 的模型、按 Schema 读取、规范化输出与校验，能力声明与依赖文本；子路径 `./node` 读取文件 | RFC-0002、`manifest/manifest.schema.json` |
-| `@xihan-framework/invocation` | `InvocationContext`：取消与截止时间（`AbortSignal`）、W3C 追踪、已登记的 Baggage、类型化对象袋；超时与取消翻译为 `KERNEL_TIMEOUT_001` / `KERNEL_CANCELLED_001` | RFC-0003 |
-| `@xihan-framework/pipeline` | 十一阶段的 `PipelineBuilder`：`use` / `useAt` / `useNamedInstance`、`before` / `after`、`describe` / `dump`、`build`；排序规则与错误码 `KERNEL_PIPELINE_00x` | RFC-0004 |
-| `@xihan-framework/operation` | `defineContract`、`OperationRegistry`、经完整管道执行的 `OperationInvoker`（XGI：JSON 请求与响应）与类型化入口 `invokeTyped` | RFC-0011 |
+| `xihan-framework/primitives` | `ErrorInfo` / 错误码、`Result<T>`、`Maybe<T>`、`TypedId<Tag, V>`、`LifecycleState`、`PipelineStage`、`Stability`、Baggage 键、消息键与模板、`MessageCatalog`、`FrameworkError` | RFC-0001、RFC-0010、`conventions/` |
+| `xihan-framework/manifest` | `xihan.manifest.json` 的模型、按 Schema 读取、规范化输出与校验，能力声明与依赖文本；读取文件在 `xihan-framework/manifest/node` | RFC-0002、`manifest/manifest.schema.json` |
+| `xihan-framework/invocation` | `InvocationContext`：取消与截止时间（`AbortSignal`）、W3C 追踪、已登记的 Baggage、类型化对象袋；超时与取消翻译为 `KERNEL_TIMEOUT_001` / `KERNEL_CANCELLED_001` | RFC-0003 |
+| `xihan-framework/pipeline` | 十一阶段的 `PipelineBuilder`：`use` / `useAt` / `useNamedInstance`、`before` / `after`、`describe` / `dump`、`build`；排序规则与错误码 `KERNEL_PIPELINE_00x` | RFC-0004 |
+| `xihan-framework/operation` | `defineContract`、`OperationRegistry`、经完整管道执行的 `OperationInvoker`（XGI：JSON 请求与响应）与类型化入口 `invokeTyped` | RFC-0011 |
 
 ## 在 TypeScript 应用里用原语
 
 ```ts
-import { InvocationContext } from '@xihan-framework/invocation';
+import { InvocationContext } from 'xihan-framework/invocation';
 import {
   defineContract,
   Expose,
@@ -27,9 +27,9 @@ import {
   OperationRegistry,
   RequestShape,
   type RequestShapeType,
-} from '@xihan-framework/operation';
-import { middleware, PipelineBuilder, Placement } from '@xihan-framework/pipeline';
-import { BaggageKey, ErrorInfo, PipelineStage, Result, writeJson } from '@xihan-framework/primitives';
+} from 'xihan-framework/operation';
+import { middleware, PipelineBuilder, Placement } from 'xihan-framework/pipeline';
+import { BaggageKey, ErrorInfo, PipelineStage, Result, writeJson } from 'xihan-framework/primitives';
 
 // 请求的形状：调用器按它在文本顺序里核对载荷并构建请求（RFC-0011 规则 2）
 const CreateOrder = RequestShape.object({ quantity: RequestShape.required(RequestShape.int32()) });
@@ -109,20 +109,20 @@ const wire = writeJson(typed); // 线上编码：数字按值模型写，不用 
 git submodule update --init          # spec/
 pnpm install
 pnpm check                           # Biome：格式与静态检查
-pnpm typecheck                       # tsc -b 构建全部包，再检查测试的类型
+pnpm typecheck                       # tsc -b 构建，再检查测试的类型
 pnpm test                            # node:test，直接跑 TypeScript 源码
 ```
 
-测试用 Node 内置的 `node:test` 而不是 vitest：不多一个开发依赖，Node 24 原生剥离类型，测试经包的自定义导出条件 `xihan-source` 直接加载各包的 TypeScript 源码，不必先构建，也就测到了各包的公开入口。源码只用可擦除的语法（`erasableSyntaxOnly`），以 `.ts` 扩展名互相导入，构建时改写为 `.js`。开发依赖只有 `typescript`、`@types/node` 与 `@biomejs/biome`。
+测试用 Node 内置的 `node:test` 而不是 vitest：不多一个开发依赖，Node 24 原生剥离类型，测试按包名自引用（`xihan-framework/<模块>`），经自定义导出条件 `xihan-source` 直接加载 TypeScript 源码，不必先构建，也就测到了各子路径的公开入口。源码只用可擦除的语法（`erasableSyntaxOnly`），以 `.ts` 扩展名互相导入，构建时改写为 `.js`。开发依赖只有 `typescript`、`@types/node` 与 `@biomejs/biome`。
 
 ## 状态
 
-`v0.1.0`：原语、清单、调用上下文、管道与操作五个包可用。进程外插件运行时 `plugin`（`xihan.plugin.v1`，基于 `@grpc/grpc-js`）与远程 Provider 操作集（首个是 `caching.distributed@1`）在规划中，下一轮实现，届时用规范仓库的黑盒运行器 `xihan-conformance plugin --dir <产物目录>` 验证。规范列为宿主能力、语言 SDK 可以不提供的部分本 SDK 不提供：管道的运行期改动（`UseOwned` / `RemoveOwnedBy`）、Schema 校验、响应过滤与幂等回放还原响应（RFC-0004、RFC-0011 规则 10）。
+`v0.1.0`：原语、清单、调用上下文、管道与操作五个模块可用。进程外插件运行时 `plugin`（`xihan.plugin.v1`，基于 `@grpc/grpc-js`）与远程 Provider 操作集（首个是 `caching.distributed@1`）在规划中，下一轮实现，届时用规范仓库的黑盒运行器 `xihan-conformance plugin --dir <产物目录>` 验证。规范列为宿主能力、语言 SDK 可以不提供的部分本 SDK 不提供：管道的运行期改动（`UseOwned` / `RemoveOwnedBy`）、Schema 校验、响应过滤与幂等回放还原响应（RFC-0004、RFC-0011 规则 10）。
 
 ## 参与
 
 1. 先读 framework-spec 的 README 与各 RFC，再看 framework-sdk-go 的包划分。
-2. 在本仓库开 Issue 认领要实现的包，一个包一个 PR，附向量测试。
+2. 在本仓库开 Issue 认领要实现的模块，一个模块一个 PR，附向量测试。
 3. 公开契约的变更不在 SDK 仓库里做：走 framework-spec 的 RFC 流程，再同步到各 SDK。
 
 ## 许可

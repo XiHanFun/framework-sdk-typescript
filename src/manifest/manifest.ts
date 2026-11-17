@@ -12,7 +12,7 @@ import {
   readJsonText,
   type Stability,
   stabilities,
-} from '@xihan-framework/primitives';
+} from '../primitives/index.ts';
 
 import {
   type CapabilityDeclaration,

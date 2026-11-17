@@ -32,8 +32,8 @@ import {
   readManifest,
   validateManifest,
   writeManifest,
-} from '@xihan-framework/manifest';
-import { readManifestFile } from '@xihan-framework/manifest/node';
+} from 'xihan-framework/manifest';
+import { readManifestFile } from 'xihan-framework/manifest/node';
 import {
   ErrorCode,
   type ErrorInfo,
@@ -47,7 +47,7 @@ import {
   Stability,
   toJsonValue,
   writeJson,
-} from '@xihan-framework/primitives';
+} from 'xihan-framework/primitives';
 
 const echoManifest = `{
   "$schema": "https://spec.xihanfun.com/manifest/v1.json",
@@ -116,7 +116,7 @@ const echoWritten = `{
 
 /** 直接读取规范子模块里的一致性向量，不复制向量文件 */
 function vector<T>(name: string): T {
-  const url = new URL(`../../../spec/conformance/vectors/primitives/${name}`, import.meta.url);
+  const url = new URL(`../spec/conformance/vectors/primitives/${name}`, import.meta.url);
   return JSON.parse(readFileSync(url, 'utf8')) as T;
 }
 
@@ -454,7 +454,7 @@ const kernelTemplates = new Map(
 
 test('清单的读取与写出遵循 manifests.json', () => {
   // 向量里的清单是 JSON 值，成员顺序就是文本顺序：按保留文档顺序的树读，再写成紧凑的文本交给读取
-  const url = new URL('../../../spec/conformance/vectors/manifest/manifests.json', import.meta.url);
+  const url = new URL('../spec/conformance/vectors/manifest/manifests.json', import.meta.url);
   const document = readJsonText(readFileSync(url));
   assert.ok(document.ok && document.root instanceof JsonMembers);
   const cases = (name: string) => document.root instanceof JsonMembers && (document.root.get(name) as JsonMembers[]);

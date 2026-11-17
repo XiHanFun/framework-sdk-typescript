@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { setTimeout as sleep } from 'node:timers/promises';
 
-import { InvocationContext } from '@xihan-framework/invocation';
+import { InvocationContext } from 'xihan-framework/invocation';
 import {
   AppOwner,
   type Middleware,
@@ -12,8 +12,8 @@ import {
   PipelineErrorCode,
   Placement,
   parseStage,
-} from '@xihan-framework/pipeline';
-import { BaggageKey, ErrorCode, ErrorInfo, FrameworkError, PipelineStage, Result } from '@xihan-framework/primitives';
+} from 'xihan-framework/pipeline';
+import { BaggageKey, ErrorCode, ErrorInfo, FrameworkError, PipelineStage, Result } from 'xihan-framework/primitives';
 
 /** 记录进入与离开的中间件；进入下游前让出一次事件循环，核对异步链按顺序展开 */
 function recording(name: string, log: string[]): Middleware {
@@ -365,7 +365,7 @@ function apply(builder: PipelineBuilder, step: OrderingStep): void {
 }
 
 test('排序、打印与报错时机遵循 pipeline/ordering.json', () => {
-  const url = new URL('../../../spec/conformance/vectors/pipeline/ordering.json', import.meta.url);
+  const url = new URL('../spec/conformance/vectors/pipeline/ordering.json', import.meta.url);
   const vectors = JSON.parse(readFileSync(url, 'utf8')) as {
     cases: { name: string; steps: OrderingStep[]; dump: string }[];
     errors: { name: string; steps: OrderingStep[]; error: string; at: number | 'sort'; message: string }[];

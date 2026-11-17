@@ -1,4 +1,4 @@
-import type { InvocationContext } from '@xihan-framework/invocation';
+import type { InvocationContext } from '../invocation/index.ts';
 import {
   ErrorCode,
   FrameworkError,
@@ -6,7 +6,7 @@ import {
   PipelineStage,
   pipelineStages,
   type Result,
-} from '@xihan-framework/primitives';
+} from '../primitives/index.ts';
 
 /**
  * 内核登记的管道错误码

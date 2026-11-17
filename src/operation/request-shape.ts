@@ -10,7 +10,7 @@ import {
   JsonPath,
   type JsonValue,
   toJsonValue,
-} from '@xihan-framework/primitives';
+} from '../primitives/index.ts';
 
 /**
  * 解码器报告载荷与请求类型不符的位置

@@ -1,11 +1,6 @@
-import {
-  type InvocationContext,
-  InvocationErrorCode,
-  InvocationMessageKey,
-  ItemKey,
-} from '@xihan-framework/invocation';
-import { type Middleware, middleware, PipelineBuilder, Placement, type Step } from '@xihan-framework/pipeline';
-import { ErrorCode, ErrorInfo, FrameworkError, PipelineStage, Result } from '@xihan-framework/primitives';
+import { type InvocationContext, InvocationErrorCode, InvocationMessageKey, ItemKey } from '../invocation/index.ts';
+import { type Middleware, middleware, PipelineBuilder, Placement, type Step } from '../pipeline/index.ts';
+import { ErrorCode, ErrorInfo, FrameworkError, PipelineStage, Result } from '../primitives/index.ts';
 
 import { type OperationContract, OperationErrorCode, OperationMessageKey } from './contract.ts';
 import {

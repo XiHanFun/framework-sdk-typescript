@@ -18,41 +18,6 @@ importers:
         specifier: 5.8.3
         version: 5.8.3
 
-  packages/invocation:
-    dependencies:
-      '@xihan-framework/primitives':
-        specifier: workspace:*
-        version: link:../primitives
-
-  packages/manifest:
-    dependencies:
-      '@xihan-framework/primitives':
-        specifier: workspace:*
-        version: link:../primitives
-
-  packages/operation:
-    dependencies:
-      '@xihan-framework/invocation':
-        specifier: workspace:*
-        version: link:../invocation
-      '@xihan-framework/pipeline':
-        specifier: workspace:*
-        version: link:../pipeline
-      '@xihan-framework/primitives':
-        specifier: workspace:*
-        version: link:../primitives
-
-  packages/pipeline:
-    dependencies:
-      '@xihan-framework/invocation':
-        specifier: workspace:*
-        version: link:../invocation
-      '@xihan-framework/primitives':
-        specifier: workspace:*
-        version: link:../primitives
-
-  packages/primitives: {}
-
 packages:
 
   '@biomejs/biome@2.6.4':

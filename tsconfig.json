@@ -1,10 +1,9 @@
 {
-  "files": [],
-  "references": [
-    { "path": "packages/primitives" },
-    { "path": "packages/manifest" },
-    { "path": "packages/invocation" },
-    { "path": "packages/pipeline" },
-    { "path": "packages/operation" }
-  ]
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "tsBuildInfoFile": "dist/.tsbuildinfo"
+  },
+  "include": ["src"]
 }

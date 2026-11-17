@@ -1,5 +1,5 @@
-import { type InvocationContext, InvocationMessageKey } from '@xihan-framework/invocation';
-import { AppOwner } from '@xihan-framework/pipeline';
+import { type InvocationContext, InvocationMessageKey } from '../invocation/index.ts';
+import { AppOwner } from '../pipeline/index.ts';
 import {
   ErrorCode,
   ErrorInfo,
@@ -9,7 +9,7 @@ import {
   Result,
   readJsonText,
   writeJson,
-} from '@xihan-framework/primitives';
+} from '../primitives/index.ts';
 
 import { checkContract, type OperationContract, OperationErrorCode, OperationMessageKey } from './contract.ts';
 import { RequestDecodeError, RequestShape } from './request-shape.ts';
