@@ -1,0 +1,17 @@
+# 从规范的 spec/plugin/plugin.proto 生成插件协议的 TypeScript 代码：src/plugin/gen/plugin.ts（pnpm generate）
+# ts-proto 直接生成 TypeScript：消息的编解码用 @bufbuild/protobuf 的 wire 运行时，服务定义给 @grpc/grpc-js
+version: v2
+inputs:
+  - directory: spec/plugin
+plugins:
+  - local: [node, node_modules/ts-proto/protoc-gen-ts_proto]
+    out: src/plugin/gen
+    opt:
+      - outputServices=grpc-js
+      # 枚举生成冻结的常量对象，源码只用可擦除的语法（erasableSyntaxOnly），Node 直接剥离类型运行
+      - enumsAsLiterals=true
+      # 协议的 JSON 映射用不到：业务载荷本来就是 JSON 文本
+      - outputJsonMethods=false
+      - useExactTypes=false
+      - esModuleInterop=true
+      - importSuffix=.js

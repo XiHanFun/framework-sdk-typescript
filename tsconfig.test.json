@@ -8,5 +8,5 @@
     "sourceMap": false,
     "customConditions": ["xihan-source"]
   },
-  "include": ["test/**/*.ts"]
+  "include": ["test/**/*.ts", "examples/**/*.ts"]
 }

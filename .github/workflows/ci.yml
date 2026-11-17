@@ -1,6 +1,7 @@
 name: CI
 
-# TypeScript SDK 的门禁：格式与静态检查、构建与类型检查、全部测试（含读取规范子模块里的一致性向量）。
+# TypeScript SDK 的门禁：格式与静态检查、构建与类型检查、全部测试（含读取规范子模块里的一致性向量，
+# 以及用规范的黑盒运行器跑示例插件 echo）、插件协议的生成代码与 spec/plugin/plugin.proto 一致。
 on:
   push:
     branches: [main]
@@ -38,6 +39,13 @@ jobs:
           node-version: 24
           cache: pnpm
 
+      - name: 安装 Go
+        # 黑盒运行器从规范子模块运行（go run ./cmd/xihan-conformance），Go 版本取它的 go.mod；没有 Go 时一致性测试只会跳过
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: spec/conformance/go.mod
+          cache-dependency-path: spec/conformance/go.sum
+
       - name: 安装依赖
         run: pnpm install --frozen-lockfile
 
@@ -49,3 +57,10 @@ jobs:
 
       - name: 测试
         run: pnpm test
+
+      - name: 核对插件协议的生成代码
+        # buf 与 ts-proto 都是锁定版本的开发依赖；生成物与提交的不同即 .proto 改了却没有重新生成
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          pnpm generate
+          git diff --exit-code -- src/plugin/gen

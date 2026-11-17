@@ -22,11 +22,11 @@
 
 </div>
 
-[XiHan Spec](https://github.com/XiHanFun/framework-spec) 的 TypeScript 实现：原语层、清单、调用上下文、管道与操作契约；参考实现是 .NET（[XiHan.Framework](https://github.com/XiHanFun/XiHan.Framework)）。规范以 submodule 放在 `spec/`，一致性由规范仓库的向量验证。
+[XiHan Spec](https://github.com/XiHanFun/framework-spec) 的 TypeScript 实现：原语层、清单、调用上下文、管道、操作契约与进程外插件运行时；参考实现是 .NET（[XiHan.Framework](https://github.com/XiHanFun/XiHan.Framework)）。规范以 submodule 放在 `spec/`，一致性由规范仓库的向量验证。
 
 ## 模块
 
-整个 SDK 是一个 npm 包 `xihan-framework`（与 crates.io、PyPI 上的包同名），各模块按子路径导入（`xihan-framework/operation`），没有根入口。全部是 ESM，运行时零第三方依赖，只用语言与平台内建的能力（`AbortSignal`、Web Crypto、`TextDecoder`、`Intl`）；除 `xihan-framework/manifest/node` 外不引用 Node 专有模块，浏览器里也能用。
+整个 SDK 是一个 npm 包 `xihan-framework`（与 crates.io、PyPI 上的包同名），各模块按子路径导入（`xihan-framework/operation`），没有根入口。全部是 ESM。核心五块运行时零第三方依赖，只用语言与平台内建的能力（`AbortSignal`、Web Crypto、`TextDecoder`、`Intl`），除 `xihan-framework/manifest/node` 外不引用 Node 专有模块，浏览器里也能用。进程外插件运行时 `xihan-framework/plugin` 只用于 Node，依赖 `@grpc/grpc-js` 与 `@bufbuild/protobuf`：它们是可选的 peerDependencies，用到插件时自己安装，其余子路径不加载它们。
 
 | 子路径 | 内容 | 规范 |
 | --- | --- | --- |
@@ -35,11 +35,13 @@
 | `xihan-framework/invocation` | `InvocationContext`：取消与截止时间（`AbortSignal`）、W3C 追踪、已登记的 Baggage、类型化对象袋；超时与取消翻译为 `KERNEL_TIMEOUT_001` / `KERNEL_CANCELLED_001` | RFC-0003 |
 | `xihan-framework/pipeline` | 十一阶段的 `PipelineBuilder`：`use` / `useAt` / `useNamedInstance`、`before` / `after`、`describe` / `dump`、`build`；排序规则与错误码 `KERNEL_PIPELINE_00x` | RFC-0004 |
 | `xihan-framework/operation` | `defineContract`、`OperationRegistry`、经完整管道执行的 `OperationInvoker`（XGI：JSON 请求与响应）与类型化入口 `invokeTyped` | RFC-0011 |
+| `xihan-framework/plugin` | 进程外插件运行时 `servePlugin`（协议 `xihan.plugin.v1`）：握手、配置、启停、健康与健康推送、`Invoke` 与事件投递，宿主回调客户端 `findHost`（`Host.Invoke`、`Host.Publish`），结构化的 stderr 日志 `PluginLogger`，消息目录 `loadCatalog`；只用于 Node | RFC-0017、`plugin/` |
 
 ## 快速开始
 
 ```bash
 pnpm add xihan-framework
+pnpm add @grpc/grpc-js @bufbuild/protobuf   # 只在写插件时需要
 ```
 
 还没有发布到 npm，发布前在本仓库里使用。
@@ -91,6 +93,56 @@ const wire = writeJson(typed); // 线上编码：数字按值模型写，不用 
 
 `Result<T>`、`ErrorInfo`、`Maybe<T>` 的 JSON 编码与 .NET 参考实现一致（`{"ok":true,"value":…}` / `{"ok":false,"error":{…}}`，没有值的成功是 `{"ok":true}`）。写出用 `writeJson`，`Result.parse` / `Result.parseMaybe` / `ErrorInfo.parse` 从文本还原（`fromJSON` 系列收已解析的值，看不出重复成员，也分不出 `2` 与 `2.0`）；JSON 文本的读取检查、线上编码、模板格式化、内核错误、清单的读写、载荷的解码、管道排序、生命周期迁移表、错误码、Baggage 键与值、`traceparent`、能力依赖的文法都由 `spec/conformance/vectors` 验证。
 
+### 写一个插件
+
+插件是宿主启动的子进程：清单 `xihan.manifest.json`、启动入口与插件代码放在插件目录里，宿主以插件目录为工作目录启动清单的 `entry`。`servePlugin` 读工作目录里的清单与宿主下发的环境变量、监听本机端点、向 stdout 写握手行，然后服务到 `Stop`、stdin 关闭或 SIGTERM。
+
+```ts
+import { defineContract, Expose, OperationRegistry, RequestShape } from 'xihan-framework/operation';
+import { findHost, HealthStatus, servePlugin } from 'xihan-framework/plugin';
+import { ErrorInfo, LifecycleState, Result } from 'xihan-framework/primitives';
+
+const registry = new OperationRegistry();
+registry.add({
+  contract: defineContract<{ text: string | null }, { text: string }>({ id: 'echoes.create', expose: [Expose.Http] }),
+  request: RequestShape.object({ text: RequestShape.required(RequestShape.string()) }),
+  handler: async (context, request) =>
+    request?.text
+      ? Result.ok({ text: request.text })
+      : Result.fail(ErrorInfo.validation('ECHOTS_VALIDATION_002', 'echots.text.missing', { operation: 'echoes.create' })),
+});
+
+await servePlugin({
+  registry, // Invoke 经调用器与完整管道执行；操作 ID 都要写进清单 contributes.operations
+  subscriptions: [{ topic: 'echo.events', handler: async (context, envelope) => Result.success() }],
+  catalogs: [{ name: 'echots', locales: { 'en-US': { 'echots.text.missing': 'The text of {operation} is required.' } } }],
+  hooks: {
+    configure: (configuration) => Result.success(), // configuration.section：清单 contributes.config.section 节
+    health: () => ({ state: LifecycleState.Ready, items: [{ name: 'echo', status: HealthStatus.Healthy }] }),
+  },
+});
+// 处理器里回调宿主：await findHost(context)?.invoke(context, 'orders.get', '{"id":"o-1"}')
+```
+
+清单的要点：
+
+- `kind` 为 `plugin`、`isolation` 为 `out-of-process`，不能写 `contributes.pipeline`（只有 Wasm 插件能贡献中间件）。
+- `entry` 是相对插件目录的可执行文件，Windows 上没有扩展名时宿主补 `.exe`。Node 插件用启动脚本：Unix 上是带 shebang、可执行的 sh 脚本，Windows 上是 `.cmd`（开头写 `@echo off`，命令不回显到 stdout）。宿主只继承少数环境变量（handshake.md §1），脚本里写出 node 与入口的绝对路径，不依赖 `NODE_PATH` 之类。
+- 操作写进 `contributes.operations`，健康项写进 `contributes.health`，配置节写 `contributes.config.section`；回调宿主要在 `permissions` 里声明 `capability:kernel.pipeline`（`Host.Invoke`）或 `capability:messaging.queue`（`Host.Publish`）。
+- 握手行之后不要向 stdout 写任何东西，日志用 `PluginLogger` 写 stderr。
+
+端点按平台：Linux 与 macOS 上是 Unix 域套接字，放在本进程新建的私有目录里（`mkdtemp`，目录 `0700`、套接字 `0600`，停止后删除）；Windows 上是命名管道 `\\.\pipe\xihan-plugin-<随机>`（Node 在 Windows 上没有 Unix 域套接字；管道用 Windows 的缺省安全描述符，其他用户只能只读打开）；`network: 'tcp'` 时只绑定回环地址。
+
+用规范仓库的黑盒运行器验证（需要 Go，在规范子模块里运行）：
+
+```bash
+cd spec/conformance
+go run ./cmd/xihan-conformance plugin --dir <插件目录> --config '{"greeting":"hello"}' \
+  --sample 'echoes.create={"text":"hi"}' --exclude echoes.crash
+```
+
+完整的示例在 `examples/echo`：四个操作（含故意崩溃、验证时排除的 `echoes.crash`）、一个订阅、健康项、配置与宿主回调。`test/plugin-conformance.test.ts` 把它放进临时目录、生成启动脚本，用运行器跑全部 8 个用例。
+
 ## 与宿主共用的行为
 
 以下行为按规范（ADR-0233、ADR-0235、ADR-0236）定死，各语言 SDK 与 .NET 宿主相同：
@@ -105,6 +157,15 @@ const wire = writeJson(typed); // 线上编码：数字按值模型写，不用 
 - **管道**（RFC-0004 排序规则第 7、8 条）：`before` / `after` 的两端是中间件名：按名字登记的实例名，或没有名字、只登记一次的中间件的类型名（按名字登记的实例不能按类型名指到）；重复登记、未知阶段、约束主体未登记或有歧义在登记时立即报，约束目标未登记、有歧义、跨阶段与成环在排序时报。错误消息是与 .NET 逐字相同的英文原文，按名字登记的实例写成 `类型名[名字]`，成环时按基准次序列出全部仍被卡住的中间件。
 - **清单**（RFC-0002 解析规则 2 与「写出」）：`readManifest` 返回 `Result<Manifest>`，错误码都是 `KERNEL_CAPABILITY_006`，按 JSON 文本（`kernel.manifest.invalid_json`，`reason` 是 `$` 或第一处重复的路径）→ 字面量 `null`（`kernel.manifest.empty`）→ 按 Schema 逐项核对（`kernel.manifest.invalid`，`reason` 是第一处问题的路径：成员按文本顺序，每个成员依次查 Schema 之外的成员、`null`、类型、取值，对象的成员查完后按 `required` 的顺序报缺少的成员）→ 跨字段约束（`primitives.manifest.*`，参数只有 `id`）的顺序报第一处。接口版本不带前导零、不超过 2147483647，只有 `requires[].version` 可带一个 `^`；中间件名至少一个字符，`contributes.health` 符合 `^[a-z][a-z0-9.-]*$`，贡献的权限码重复时报第二次出现的项。`readManifestFile` 跳过开头的 UTF-8 BOM，文件不存在为 `kernel.manifest.file_missing`（参数 `path`）；`readManifest` 收的文本不跳过 BOM。`writeManifest` 的排版逐字照规范：两个空格缩进、LF、末尾不换行、列表总写、缺省值写出、字符串只转义必须转义的字符。只有 Wasm 插件能贡献中间件由宿主在发现时核对，读清单时不核对。
 - **文法的匹配**（RFC-0001「文法的匹配」）：消息键、错误码、Baggage 键、清单与能力 ID、操作 ID、`traceparent` 等文法都按整串匹配，结尾的换行不例外。JavaScript 的 `$` 在没有 `m` 标志时只匹配输入的末尾，本 SDK 的正则都不带 `m`，所以天然是整串匹配。
+- **插件协议**（RFC-0017、`plugin/`）：
+  - 每个 RPC（含 Handshake 与流式调用）先按常数时间核对元数据 `xihan-plugin-session`，缺失、不匹配或不止一个值都以 `Unauthenticated` 结束、不执行（handshake.md §4，ADR-0202）。
+  - 握手选宿主列表里最高的共同版本，没有共同版本以 `FailedPrecondition` 拒绝；清单原文原样交出（去掉开头的 BOM），操作声明带 Schema。与清单不符的声明在监听之前就以 `FrameworkError` 拒绝：操作不在 `contributes.operations`、订阅的主题不合文法或方式不是空、`competing`、`broadcast`、同一（主题，类型）声明两次、目录没有 `en-US`、清单写了 `contributes.pipeline`。
+  - 状态用 `LifecycleState` 与它的迁移表：握手成功为 Resolved，Configure 成功为 Configured，Start 成功为 Started，没有健康回调时直接 Ready；运行中健康回调报 Ready、Degraded 或 Failed 会改变状态。Start 之前与停止之中的 `Invoke` 与投递为 `PLUGINS_UNAVAILABLE_001` + `plugins.process.unavailable`，未声明的操作以 gRPC `Unimplemented` 结束，乱序的生命周期调用以 `FailedPrecondition` 结束。
+  - 调用上下文从 `InvocationMetadata` 还原（invocation.md §2）：截止时间取 `deadline`（RFC 3339），没有时取 gRPC 调用的截止时间；追踪取 `trace_parent`；Baggage 只收已登记的键；gRPC 取消触发上下文的信号。业务失败走 `Status.error`（`details` 按值模型写出），gRPC 状态只表示传输失败。
+  - 事件按（主题，投递的方式）找订阅，再看类型：以这种方式声明、类型为空或相同的订阅按声明顺序依次执行，第一个失败即投递结果；找不到时返回失败，不改交给另一种方式的处理器（invocation.md §4）。
+  - `Stop` 进入 Draining、拒绝新调用、在宽限内等在途调用、调用停止回调，然后应答并停止服务；stdin 关闭与 SIGTERM 同样收尾退出（handshake.md §1、lifecycle.md §5）。`WatchHealth` 先推当前状态，变化时再推，停止时推 Draining 并结束流。
+  - 回调 `Host.Invoke` 与 `Host.Publish` 带会话令牌、追踪、截止时间与已登记的 Baggage。租户只能是宿主随调用交给插件的（invocation.md §5，ADR-0195）：宿主拒绝越界的租户，本 SDK 在发出之前就按同样的规则判定，上下文或信封的 `xihantenant` 不是宿主此刻交给插件处理的某个调用的租户（含调用结束后在后台回调）时就地以 `PLUGINS_DENIED_002` + `plugins.callback.tenant_denied` 失败，发布逐项判定。传输失败按 invocation.md §3 的映射表：`Unauthenticated` 与 `PermissionDenied` 是 `PLUGINS_DENIED_002`，`Unimplemented` 是 `KERNEL_NOTFOUND_001`，`InvalidArgument` 是 `KERNEL_VALIDATION_001`，`DeadlineExceeded` 与调用方的取消按上下文归因，`Unavailable` 是 `PLUGINS_UNAVAILABLE_001`，其余是 `PLUGINS_UNEXPECTED_001`。
+  - 日志写 stderr，一行一个 JSON 对象：`level`（`trace` / `debug` / `information` / `warning` / `error` / `critical`）、`message`，其余是作用域属性（invocation.md §6）。运行时自己的消息键（`plugins.*`）带 10 种区域的模板（`pluginMessages`）。
 
 ## 语言映射
 
@@ -126,10 +187,11 @@ const wire = writeJson(typed); // 线上编码：数字按值模型写，不用 
 - `TypedId<'order'>` 是品牌类型，运行期就是底层的字符串或数值，标签不上线。
 - `InvocationContext` 不可变，`withBaggage` 等方法派生新的上下文；取消与截止时间是 `signal`（`AbortSignal.any` 合并调用方的信号与 `AbortSignal.timeout`），可以直接传给 `fetch` 等接口。截止信号已触发即报超时，调用方同时取消也一样（RFC-0003 第 1 条）。
 - 中间件、步、处理器与调用器都返回 `Promise`。查找以 `find` 开头，没有时返回 `undefined`。
+- 插件协议的代码由 ts-proto 从 `spec/plugin/plugin.proto` 生成在 `src/plugin/gen`：消息的编解码用 `@bufbuild/protobuf` 的 wire 运行时，服务定义直接给 `@grpc/grpc-js`，枚举生成冻结的常量对象，Node 照样直接剥离类型运行。生成代码不是公开入口，`xihan-framework/plugin` 的类型（`Envelope`、`PluginHealth`、`PluginConfiguration` 等）不暴露 protobuf 类型。生命周期回调与事件处理器返回 `Result`，抛出的异常记日志、按未处理异常返回，不把异常消息写上线。
 
 ## 开发
 
-需要 Node 24 与 pnpm 11。
+需要 Node 24 与 pnpm 11；插件的一致性测试还需要 Go（版本见 `spec/conformance/go.mod`），没有 Go 时它跳过。
 
 ```bash
 git submodule update --init          # spec/
@@ -137,13 +199,14 @@ pnpm install
 pnpm check                           # Biome：格式与静态检查
 pnpm typecheck                       # tsc -b 构建，再检查测试的类型
 pnpm test                            # node:test，直接跑 TypeScript 源码
+pnpm generate                        # 从 spec/plugin/plugin.proto 重新生成 src/plugin/gen（buf + ts-proto）
 ```
 
-测试用 Node 内置的 `node:test` 而不是 vitest：不多一个开发依赖，Node 24 原生剥离类型，测试按包名自引用（`xihan-framework/<模块>`），经自定义导出条件 `xihan-source` 直接加载 TypeScript 源码，不必先构建，也就测到了各子路径的公开入口。源码只用可擦除的语法（`erasableSyntaxOnly`），以 `.ts` 扩展名互相导入，构建时改写为 `.js`。开发依赖只有 `typescript`、`@types/node` 与 `@biomejs/biome`。
+测试用 Node 内置的 `node:test` 而不是 vitest：不多一个开发依赖，Node 24 原生剥离类型，测试按包名自引用（`xihan-framework/<模块>`），经自定义导出条件 `xihan-source` 直接加载 TypeScript 源码，不必先构建，也就测到了各子路径的公开入口。源码只用可擦除的语法（`erasableSyntaxOnly`），以 `.ts` 扩展名互相导入，构建时改写为 `.js`。开发依赖是 `typescript`、`@types/node`、`@biomejs/biome`，插件运行时的 `@grpc/grpc-js` 与 `@bufbuild/protobuf`（同时是可选的 peerDependencies），以及生成协议代码的 `@bufbuild/buf` 与 `ts-proto`；生成代码不过 Biome（`biome.json` 排除 `src/plugin/gen`），类型检查照常，CI 重新生成并核对与提交的一致。`test/plugin-conformance.test.ts` 在 `spec/conformance` 里 `go run ./cmd/xihan-conformance`，运行器的 Go 依赖按 `GOPROXY` 下载。
 
 ## 状态
 
-ADR-0004 把 TypeScript 定为 Go 之后的第二个 SDK。`v0.1.0`：原语、清单、调用上下文、管道与操作五个模块可用。进程外插件运行时 `plugin`（`xihan.plugin.v1`，基于 `@grpc/grpc-js`）与远程 Provider 操作集（首个是 `caching.distributed@1`）在规划中，下一轮实现，届时用规范仓库的黑盒运行器 `xihan-conformance plugin --dir <产物目录>` 验证。规范列为宿主能力、语言 SDK 可以不提供的部分本 SDK 不提供：管道的运行期改动（`UseOwned` / `RemoveOwnedBy`）、Schema 校验、响应过滤与幂等回放还原响应（RFC-0004、RFC-0011 规则 10）。
+ADR-0004 把 TypeScript 定为 Go 之后的第二个 SDK。`v0.1.0`：原语、清单、调用上下文、管道与操作五个模块可用；进程外插件运行时 `plugin`（`xihan.plugin.v1`，基于 `@grpc/grpc-js`）可用，示例插件 echo 通过规范仓库黑盒运行器 `xihan-conformance plugin` 的全部 8 个用例。流式操作的契约还没有定义（RFC-0017「非目标」），`InvokeStream` 核对帧序后以 `Unimplemented` 结束。远程 Provider 操作集（如 `caching.distributed@1`）仍未提供。规范列为宿主能力、语言 SDK 可以不提供的部分本 SDK 不提供：管道的运行期改动（`UseOwned` / `RemoveOwnedBy`）、Schema 校验、响应过滤与幂等回放还原响应（RFC-0004、RFC-0011 规则 10）。
 
 ## 生态
 

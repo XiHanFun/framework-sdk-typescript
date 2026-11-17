@@ -1,0 +1,5 @@
+# pnpm 的项目设置（不是多包工作区）
+# 依赖的安装脚本一律不跑：@bufbuild/buf 的 bin 直接定位平台包里的可执行文件，protobufjs（经 @grpc/grpc-js 引入）的脚本只核对版本
+allowBuilds:
+  "@bufbuild/buf": false
+  protobufjs: false

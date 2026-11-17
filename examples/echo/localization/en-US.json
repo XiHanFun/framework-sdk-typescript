@@ -1,0 +1,11 @@
+{
+  "echots.configuration.invalid": "The XiHan:Echo configuration is not valid: {reason}.",
+  "echots.host.unavailable": "The host callback endpoint is not available.",
+  "echots.text.missing": "The text of {operation} is required.",
+  "echoes.create.title": "Echo",
+  "echoes.create.description": "Echoes the text together with the greeting, tenant, principal and correlation ID.",
+  "echoes.relay.title": "Relay",
+  "echoes.relay.description": "Invokes another operation through the host and returns its response.",
+  "events.list.title": "Received events",
+  "events.list.description": "Lists the IDs of the most recent events delivered to the plugin."
+}

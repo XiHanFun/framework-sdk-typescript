@@ -22,11 +22,11 @@
 
 </div>
 
-The TypeScript implementation of [XiHan Spec](https://github.com/XiHanFun/framework-spec): the primitives layer, manifests, the invocation context, the pipeline and operation contracts; the reference implementation is .NET ([XiHan.Framework](https://github.com/XiHanFun/XiHan.Framework)). The spec is included as a submodule in `spec/`, and conformance is verified against the spec repository's vectors.
+The TypeScript implementation of [XiHan Spec](https://github.com/XiHanFun/framework-spec): the primitives layer, manifests, the invocation context, the pipeline, operation contracts and the out-of-process plugin runtime; the reference implementation is .NET ([XiHan.Framework](https://github.com/XiHanFun/XiHan.Framework)). The spec is included as a submodule in `spec/`, and conformance is verified against the spec repository's vectors.
 
 ## Modules
 
-The whole SDK is a single npm package, `xihan-framework` (the same name as the packages on crates.io and PyPI), with each module imported by subpath (`xihan-framework/operation`); there is no root entry point. It is all ESM, with zero third-party runtime dependencies, using only capabilities built into the language and platform (`AbortSignal`, Web Crypto, `TextDecoder`, `Intl`). Apart from `xihan-framework/manifest/node`, it references no Node-specific modules, so it also works in the browser.
+The whole SDK is a single npm package, `xihan-framework` (the same name as the packages on crates.io and PyPI), with each module imported by subpath (`xihan-framework/operation`); there is no root entry point. It is all ESM. The five core modules have zero third-party runtime dependencies, using only capabilities built into the language and platform (`AbortSignal`, Web Crypto, `TextDecoder`, `Intl`), and apart from `xihan-framework/manifest/node` they reference no Node-specific modules, so they also work in the browser. The out-of-process plugin runtime `xihan-framework/plugin` is for Node only and depends on `@grpc/grpc-js` and `@bufbuild/protobuf`: they are optional peerDependencies that you install yourself when you write a plugin, and the other subpaths never load them.
 
 | Subpath | Contents | Spec |
 | --- | --- | --- |
@@ -35,11 +35,13 @@ The whole SDK is a single npm package, `xihan-framework` (the same name as the p
 | `xihan-framework/invocation` | `InvocationContext`: cancellation and deadlines (`AbortSignal`), W3C tracing, registered Baggage, a typed item bag; timeouts and cancellation translated to `KERNEL_TIMEOUT_001` / `KERNEL_CANCELLED_001` | RFC-0003 |
 | `xihan-framework/pipeline` | The eleven-stage `PipelineBuilder`: `use` / `useAt` / `useNamedInstance`, `before` / `after`, `describe` / `dump`, `build`; ordering rules and error codes `KERNEL_PIPELINE_00x` | RFC-0004 |
 | `xihan-framework/operation` | `defineContract`, `OperationRegistry`, `OperationInvoker` running through the full pipeline (XGI: JSON request and response), and the typed entry point `invokeTyped` | RFC-0011 |
+| `xihan-framework/plugin` | The out-of-process plugin runtime `servePlugin` (protocol `xihan.plugin.v1`): handshake, configuration, start and stop, health and health push, `Invoke` and event delivery; the host callback client `findHost` (`Host.Invoke`, `Host.Publish`), structured stderr logging with `PluginLogger`, and message catalogs with `loadCatalog`; Node only | RFC-0017, `plugin/` |
 
 ## Getting Started
 
 ```bash
 pnpm add xihan-framework
+pnpm add @grpc/grpc-js @bufbuild/protobuf   # only needed to write a plugin
 ```
 
 Not yet published to npm; until then, use it from this repository.
@@ -91,6 +93,56 @@ const wire = writeJson(typed); // Wire encoding: numbers are written by the valu
 
 The JSON encoding of `Result<T>`, `ErrorInfo` and `Maybe<T>` matches the .NET reference implementation (`{"ok":true,"value":…}` / `{"ok":false,"error":{…}}`; a success without a value is `{"ok":true}`). Write with `writeJson`, and restore from text with `Result.parse` / `Result.parseMaybe` / `ErrorInfo.parse` (the `fromJSON` family takes already-parsed values, so it cannot see duplicate members or tell `2` from `2.0`). The JSON text check, wire encoding, template formatting, kernel errors, manifest reading and writing, payload decoding, pipeline ordering, the lifecycle transition table, error codes, Baggage keys and values, `traceparent` and the capability requirement grammar are all verified by `spec/conformance/vectors`.
 
+### Write a Plugin
+
+A plugin is a child process started by the host: the manifest `xihan.manifest.json`, the launch entry and the plugin code live in the plugin directory, and the host starts the manifest's `entry` with the plugin directory as its working directory. `servePlugin` reads the manifest in the working directory and the environment variables passed by the host, listens on a local endpoint, writes the handshake line to stdout, and then serves until `Stop`, stdin closing or SIGTERM.
+
+```ts
+import { defineContract, Expose, OperationRegistry, RequestShape } from 'xihan-framework/operation';
+import { findHost, HealthStatus, servePlugin } from 'xihan-framework/plugin';
+import { ErrorInfo, LifecycleState, Result } from 'xihan-framework/primitives';
+
+const registry = new OperationRegistry();
+registry.add({
+  contract: defineContract<{ text: string | null }, { text: string }>({ id: 'echoes.create', expose: [Expose.Http] }),
+  request: RequestShape.object({ text: RequestShape.required(RequestShape.string()) }),
+  handler: async (context, request) =>
+    request?.text
+      ? Result.ok({ text: request.text })
+      : Result.fail(ErrorInfo.validation('ECHOTS_VALIDATION_002', 'echots.text.missing', { operation: 'echoes.create' })),
+});
+
+await servePlugin({
+  registry, // Invoke runs through the invoker and the full pipeline; every operation ID must be listed in the manifest's contributes.operations
+  subscriptions: [{ topic: 'echo.events', handler: async (context, envelope) => Result.success() }],
+  catalogs: [{ name: 'echots', locales: { 'en-US': { 'echots.text.missing': 'The text of {operation} is required.' } } }],
+  hooks: {
+    configure: (configuration) => Result.success(), // configuration.section: the manifest's contributes.config.section
+    health: () => ({ state: LifecycleState.Ready, items: [{ name: 'echo', status: HealthStatus.Healthy }] }),
+  },
+});
+// Calling back the host from a handler: await findHost(context)?.invoke(context, 'orders.get', '{"id":"o-1"}')
+```
+
+Manifest essentials:
+
+- `kind` is `plugin` and `isolation` is `out-of-process`; `contributes.pipeline` must not be written (only Wasm plugins can contribute middleware).
+- `entry` is an executable relative to the plugin directory, and on Windows the host appends `.exe` when it has no extension. A Node plugin uses a launch script: on Unix an executable sh script with a shebang, on Windows a `.cmd` (starting with `@echo off`, so commands are not echoed to stdout). The host passes on only a few environment variables (handshake.md §1), so the script spells out the absolute paths of node and the entry point and does not rely on variables such as `NODE_PATH`.
+- Operations go in `contributes.operations`, health items in `contributes.health`, and the configuration section in `contributes.config.section`; calling back the host requires declaring `capability:kernel.pipeline` (`Host.Invoke`) or `capability:messaging.queue` (`Host.Publish`) in `permissions`.
+- Write nothing to stdout after the handshake line; log to stderr with `PluginLogger`.
+
+Endpoints by platform: on Linux and macOS, a Unix domain socket in a private directory newly created by the process (`mkdtemp`, directory `0700`, socket `0600`, removed after stopping); on Windows, a named pipe `\\.\pipe\xihan-plugin-<random>` (Node has no Unix domain sockets on Windows; the pipe uses the default Windows security descriptor, so other users can only open it read-only); with `network: 'tcp'`, only a loopback address is bound.
+
+Verify with the spec repository's black-box runner (requires Go, run inside the spec submodule):
+
+```bash
+cd spec/conformance
+go run ./cmd/xihan-conformance plugin --dir <plugin-dir> --config '{"greeting":"hello"}' \
+  --sample 'echoes.create={"text":"hi"}' --exclude echoes.crash
+```
+
+The complete example is in `examples/echo`: four operations (including `echoes.crash`, which crashes on purpose and is excluded during verification), one subscription, a health item, configuration and a host callback. `test/plugin-conformance.test.ts` puts it in a temporary directory, generates the launch script and runs all 8 cases with the runner.
+
 ## Behavior Shared with the Host
 
 The following behavior is fixed by the spec (ADR-0233, ADR-0235, ADR-0236) and is identical across the language SDKs and the .NET host:
@@ -105,6 +157,15 @@ The following behavior is fixed by the spec (ADR-0233, ADR-0235, ADR-0236) and i
 - **Pipeline** (RFC-0004 ordering rules 7 and 8): both ends of `before` / `after` are middleware names: the instance name for an instance registered by name, or the type name for middleware that has no name and is registered only once (an instance registered by name cannot be referenced by its type name). Duplicate registration, unknown stages, and a constraint subject that is unregistered or ambiguous are reported immediately at registration; a constraint target that is unregistered or ambiguous, cross-stage constraints and cycles are reported during ordering. Error messages are the original English text, word for word identical to .NET; an instance registered by name is written as `TypeName[name]`, and a cycle lists every middleware still blocked, in baseline order.
 - **Manifest** (RFC-0002 parsing rule 2 and "Writing"): `readManifest` returns `Result<Manifest>`, always with error code `KERNEL_CAPABILITY_006`, and reports the first problem in this order: JSON text (`kernel.manifest.invalid_json`, with `reason` `$` or the path of the first duplicate) → the literal `null` (`kernel.manifest.empty`) → item-by-item checks against the schema (`kernel.manifest.invalid`, with `reason` the path of the first problem: members in text order, each checked in turn for being outside the schema, `null`, type and value, and once an object's members are checked, missing members reported in `required` order) → cross-field constraints (`primitives.manifest.*`, with `id` as the only argument). Interface versions have no leading zeros and do not exceed 2147483647, and only `requires[].version` may carry a single `^`; middleware names have at least one character, `contributes.health` matches `^[a-z][a-z0-9.-]*$`, and a duplicated contributed permission code is reported at its second occurrence. `readManifestFile` skips a leading UTF-8 BOM, and a missing file is `kernel.manifest.file_missing` (argument `path`); `readManifest` does not skip a BOM in the text it receives. `writeManifest` follows the spec's layout exactly: two-space indentation, LF, no trailing newline, lists always written, default values written out, and strings escaping only the characters that must be escaped. That only Wasm plugins may contribute middleware is checked by the host at discovery, not when the manifest is read.
 - **Grammar matching** (RFC-0001 "Grammar matching"): grammars such as message keys, error codes, Baggage keys, manifest and capability IDs, operation IDs and `traceparent` all use whole-string matching, with no exception for a trailing newline. In JavaScript, `$` without the `m` flag matches only the end of the input, and none of this SDK's regular expressions use `m`, so they match whole strings by nature.
+- **Plugin protocol** (RFC-0017, `plugin/`):
+  - Every RPC (including Handshake and streaming calls) first checks the metadata `xihan-plugin-session` in constant time; a missing token, a mismatch or more than one value ends the call with `Unauthenticated` without running it (handshake.md §4, ADR-0202).
+  - The handshake selects the highest version in the host's list that both sides support and refuses with `FailedPrecondition` when there is none; the manifest text is handed over as is (without a leading BOM), and operation declarations carry their schemas. Declarations that do not match the manifest are rejected with `FrameworkError` before listening: an operation not in `contributes.operations`, a subscription whose topic does not match the grammar or whose mode is not empty, `competing` or `broadcast`, the same (topic, type) declared twice, a catalog without `en-US`, or a manifest that declares `contributes.pipeline`.
+  - States use `LifecycleState` and its transition table: Resolved after a successful handshake, Configured after a successful Configure, Started after a successful Start, and straight to Ready when there is no health hook; while running, a health hook reporting Ready, Degraded or Failed changes the state. `Invoke` and deliveries before Start and during stopping are `PLUGINS_UNAVAILABLE_001` + `plugins.process.unavailable`, an undeclared operation ends with gRPC `Unimplemented`, and lifecycle calls out of order end with `FailedPrecondition`.
+  - The invocation context is restored from `InvocationMetadata` (invocation.md §2): the deadline comes from `deadline` (RFC 3339), or from the gRPC call's deadline when absent; tracing comes from `trace_parent`; Baggage accepts only registered keys; gRPC cancellation fires the context's signal. Business failures travel in `Status.error` (`details` written by the value model), and the gRPC status signals only transport failures.
+  - An event is matched by (topic, delivery mode) first and then by type: subscriptions declared with that mode whose type is empty or equal run in declaration order, and the first failure is the delivery's result; when none matches, a failure is returned instead of handing the message to a handler of the other mode (invocation.md §4).
+  - `Stop` enters Draining, rejects new calls, waits for in-flight calls within the grace period, calls the stop hook, then answers and stops serving; stdin closing and SIGTERM likewise wind down and exit (handshake.md §1, lifecycle.md §5). `WatchHealth` pushes the current state first and again on each change, and on stopping pushes Draining and ends the stream.
+  - The callbacks `Host.Invoke` and `Host.Publish` carry the session token, tracing, the deadline and registered Baggage. The tenant can only be one the host handed to the plugin with a call (invocation.md §5, ADR-0195): the host rejects a tenant out of bounds, and this SDK applies the same rule before sending, so when the context's tenant or an envelope's `xihantenant` is not the tenant of a call the host is currently handing to the plugin (including a background callback after the call has ended), the callback fails on the spot with `PLUGINS_DENIED_002` + `plugins.callback.tenant_denied`, item by item for publishing. Transport failures follow the mapping table in invocation.md §3: `Unauthenticated` and `PermissionDenied` are `PLUGINS_DENIED_002`, `Unimplemented` is `KERNEL_NOTFOUND_001`, `InvalidArgument` is `KERNEL_VALIDATION_001`, `DeadlineExceeded` and the caller's cancellation are attributed by the context, `Unavailable` is `PLUGINS_UNAVAILABLE_001`, and everything else is `PLUGINS_UNEXPECTED_001`.
+  - Logs go to stderr, one JSON object per line: `level` (`trace` / `debug` / `information` / `warning` / `error` / `critical`), `message`, and the remaining members as scope properties (invocation.md §6). The runtime's own message keys (`plugins.*`) ship templates for 10 locales (`pluginMessages`).
 
 ## Language Mapping
 
@@ -126,10 +187,11 @@ The spec requires each SDK to document how its language's values map to the valu
 - `TypedId<'order'>` is a branded type: at run time it is just the underlying string or number, and the tag never goes on the wire.
 - `InvocationContext` is immutable, and methods such as `withBaggage` derive a new context. Cancellation and deadlines are a `signal` (`AbortSignal.any` combining the caller's signal with `AbortSignal.timeout`), which can be passed directly to APIs such as `fetch`. Once the deadline signal has fired, a timeout is reported, even if the caller cancels at the same time (RFC-0003 rule 1).
 - Middleware, steps, handlers and the invoker all return a `Promise`. Lookups start with `find` and return `undefined` when nothing is found.
+- The plugin protocol code is generated by ts-proto from `spec/plugin/plugin.proto` into `src/plugin/gen`: messages are encoded and decoded with the wire runtime of `@bufbuild/protobuf`, service definitions go straight to `@grpc/grpc-js`, and enums are generated as frozen constant objects, so Node still strips the types and runs it directly. The generated code is not a public entry point, and the types of `xihan-framework/plugin` (`Envelope`, `PluginHealth`, `PluginConfiguration` and so on) do not expose protobuf types. Lifecycle hooks and event handlers return a `Result`; an exception they throw is logged and returned as an unhandled exception, without putting the exception message on the wire.
 
 ## Development
 
-Requires Node 24 and pnpm 11.
+Requires Node 24 and pnpm 11; the plugin conformance test also needs Go (version in `spec/conformance/go.mod`) and is skipped without it.
 
 ```bash
 git submodule update --init          # spec/
@@ -137,13 +199,14 @@ pnpm install
 pnpm check                           # Biome: formatting and static checks
 pnpm typecheck                       # tsc -b build, then type-check the tests
 pnpm test                            # node:test, running the TypeScript sources directly
+pnpm generate                        # regenerate src/plugin/gen from spec/plugin/plugin.proto (buf + ts-proto)
 ```
 
-Tests use Node's built-in `node:test` rather than vitest: it adds no development dependency, Node 24 strips types natively, and the tests self-reference the package by name (`xihan-framework/<module>`), loading the TypeScript sources directly through the custom export condition `xihan-source`, so no build is needed first and the public entry point of each subpath is what gets tested. The sources use only erasable syntax (`erasableSyntaxOnly`) and import each other with the `.ts` extension, rewritten to `.js` at build time. The only development dependencies are `typescript`, `@types/node` and `@biomejs/biome`.
+Tests use Node's built-in `node:test` rather than vitest: it adds no development dependency, Node 24 strips types natively, and the tests self-reference the package by name (`xihan-framework/<module>`), loading the TypeScript sources directly through the custom export condition `xihan-source`, so no build is needed first and the public entry point of each subpath is what gets tested. The sources use only erasable syntax (`erasableSyntaxOnly`) and import each other with the `.ts` extension, rewritten to `.js` at build time. The development dependencies are `typescript`, `@types/node`, `@biomejs/biome`, the plugin runtime's `@grpc/grpc-js` and `@bufbuild/protobuf` (also optional peerDependencies), and `@bufbuild/buf` and `ts-proto` for generating the protocol code; the generated code skips Biome (`biome.json` excludes `src/plugin/gen`) but is type-checked as usual, and CI regenerates it and checks that it matches what is committed. `test/plugin-conformance.test.ts` runs `go run ./cmd/xihan-conformance` in `spec/conformance`, and the runner's Go dependencies are downloaded through `GOPROXY`.
 
 ## Status
 
-ADR-0004 makes TypeScript the second SDK after Go. `v0.1.0`: five modules are available: primitives, manifest, invocation context, pipeline and operation. The out-of-process plugin runtime `plugin` (`xihan.plugin.v1`, based on `@grpc/grpc-js`) and the remote provider operation sets (starting with `caching.distributed@1`) are planned and will be implemented in the next round, then verified with the spec repository's black-box runner `xihan-conformance plugin --dir <artifact-dir>`. This SDK does not provide the parts the spec lists as host capabilities that language SDKs may omit: runtime changes to the pipeline (`UseOwned` / `RemoveOwnedBy`), schema validation, response filtering, and restoring the response on idempotent replay (RFC-0004, RFC-0011 rule 10).
+ADR-0004 makes TypeScript the second SDK after Go. `v0.1.0`: five modules are available: primitives, manifest, invocation context, pipeline and operation; the out-of-process plugin runtime `plugin` (`xihan.plugin.v1`, based on `@grpc/grpc-js`) is available, and the example plugin echo passes all 8 cases of the spec repository's black-box runner `xihan-conformance plugin`. The contract for streaming operations is not yet defined (RFC-0017 "Non-goals"), so `InvokeStream` checks the frame order and then ends with `Unimplemented`. The remote provider operation sets (such as `caching.distributed@1`) are still not provided. This SDK does not provide the parts the spec lists as host capabilities that language SDKs may omit: runtime changes to the pipeline (`UseOwned` / `RemoveOwnedBy`), schema validation, response filtering, and restoring the response on idempotent replay (RFC-0004, RFC-0011 rule 10).
 
 ## Ecosystem
 

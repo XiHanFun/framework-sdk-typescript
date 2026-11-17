@@ -1,7 +1,7 @@
 {
   "name": "xihan-framework",
   "version": "0.1.0",
-  "description": "XiHan Framework 的 TypeScript SDK：原语、清单、调用上下文、管道与操作契约",
+  "description": "XiHan Framework 的 TypeScript SDK：原语、清单、调用上下文、管道、操作契约与进程外插件运行时",
   "license": "MIT",
   "type": "module",
   "repository": {
@@ -39,6 +39,11 @@
       "xihan-source": "./src/operation/index.ts",
       "types": "./dist/operation/index.d.ts",
       "default": "./dist/operation/index.js"
+    },
+    "./plugin": {
+      "xihan-source": "./src/plugin/index.ts",
+      "types": "./dist/plugin/index.d.ts",
+      "default": "./dist/plugin/index.js"
     }
   },
   "files": [
@@ -55,11 +60,28 @@
     "typecheck": "tsc -b && tsc -p tsconfig.test.json",
     "test": "node --conditions=xihan-source --test \"test/*.test.ts\"",
     "check": "biome check .",
-    "format": "biome check --write ."
+    "format": "biome check --write .",
+    "generate": "buf generate"
+  },
+  "peerDependencies": {
+    "@bufbuild/protobuf": "^2.17.0",
+    "@grpc/grpc-js": "^1.14.7"
+  },
+  "peerDependenciesMeta": {
+    "@bufbuild/protobuf": {
+      "optional": true
+    },
+    "@grpc/grpc-js": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@biomejs/biome": "2.6.4",
+    "@bufbuild/buf": "1.75.0",
+    "@bufbuild/protobuf": "2.17.0",
+    "@grpc/grpc-js": "1.14.7",
     "@types/node": "24.10.15",
+    "ts-proto": "2.22.0",
     "typescript": "5.8.3"
   }
 }
