@@ -78,7 +78,8 @@ export class FrameworkError extends Error {
    * 转成可上线的 {@link ErrorInfo}
    *
    * @remarks
-   * 有消息键时带上键与参数，文案就是本错误的消息；没有时是 Literal。码不合法时用 `PRIMITIVES_VALIDATION_001`，与 Go SDK 的 `ToError` 一致
+   * 有消息键时带上键与参数，文案就是本错误的消息；没有时是 Literal。线上的 `code` 必须合文法（RFC-0001「Result」），
+   * 码不合法时换成原语参数非法的 `PRIMITIVES_VALIDATION_001`
    */
   toErrorInfo(): ErrorInfo {
     const code = isErrorCode(this.code) ? this.code : ErrorCode.InvalidArgument;

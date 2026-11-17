@@ -22,7 +22,7 @@
 
 </div>
 
-The TypeScript implementation of [XiHan Spec](https://github.com/XiHanFun/framework-spec): the primitives layer, manifests, the invocation context, the pipeline and operation contracts; its shapes and semantics follow the same-named packages in [framework-sdk-go](https://github.com/XiHanFun/framework-sdk-go), and the reference implementation is .NET ([XiHan.Framework](https://github.com/XiHanFun/XiHan.Framework)). The spec is included as a submodule in `spec/`, and conformance is verified against the spec repository's vectors.
+The TypeScript implementation of [XiHan Spec](https://github.com/XiHanFun/framework-spec): the primitives layer, manifests, the invocation context, the pipeline and operation contracts; the reference implementation is .NET ([XiHan.Framework](https://github.com/XiHanFun/XiHan.Framework)). The spec is included as a submodule in `spec/`, and conformance is verified against the spec repository's vectors.
 
 ## Modules
 
@@ -151,7 +151,7 @@ ADR-0004 makes TypeScript the second SDK after Go. `v0.1.0`: five modules are av
 | --- | --- |
 | [framework-spec](https://github.com/XiHanFun/framework-spec) | XiHan Spec: RFCs, vocabulary, protocol mappings and conformance vectors |
 | [XiHan.Framework](https://github.com/XiHanFun/XiHan.Framework) | The .NET reference implementation |
-| [framework-sdk-go](https://github.com/XiHanFun/framework-sdk-go) | Go SDK, including the out-of-process plugin runtime |
+| [framework-sdk-go](https://github.com/XiHanFun/framework-sdk-go) | Go SDK |
 | [framework-sdk-rust](https://github.com/XiHanFun/framework-sdk-rust) | Rust SDK |
 | [framework-sdk-java](https://github.com/XiHanFun/framework-sdk-java) | Java SDK |
 | [framework-sdk-python](https://github.com/XiHanFun/framework-sdk-python) | Python SDK |
@@ -161,7 +161,7 @@ ADR-0004 makes TypeScript the second SDK after Go. `v0.1.0`: five modules are av
 
 [Issues](https://github.com/XiHanFun/framework-sdk-typescript/issues) and pull requests are welcome.
 
-1. Read the framework-spec README and the RFCs first, then look at how framework-sdk-go divides its packages.
+1. Start with the README and the relevant RFCs of framework-spec.
 2. Open an issue in this repository to claim the module you want to implement; one pull request per module, with vector tests.
 3. Changes to public contracts are not made in the SDK repositories: they go through the framework-spec RFC process and are then synced to each SDK.
 

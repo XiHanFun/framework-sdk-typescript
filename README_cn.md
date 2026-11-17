@@ -22,7 +22,7 @@
 
 </div>
 
-[XiHan Spec](https://github.com/XiHanFun/framework-spec) 的 TypeScript 实现：原语层、清单、调用上下文、管道与操作契约；形状与语义以 [framework-sdk-go](https://github.com/XiHanFun/framework-sdk-go) 的同名包为参照，参考实现是 .NET（[XiHan.Framework](https://github.com/XiHanFun/XiHan.Framework)）。规范以 submodule 放在 `spec/`，一致性由规范仓库的向量验证。
+[XiHan Spec](https://github.com/XiHanFun/framework-spec) 的 TypeScript 实现：原语层、清单、调用上下文、管道与操作契约；参考实现是 .NET（[XiHan.Framework](https://github.com/XiHanFun/XiHan.Framework)）。规范以 submodule 放在 `spec/`，一致性由规范仓库的向量验证。
 
 ## 模块
 
@@ -151,7 +151,7 @@ ADR-0004 把 TypeScript 定为 Go 之后的第二个 SDK。`v0.1.0`：原语、�
 | --- | --- |
 | [framework-spec](https://github.com/XiHanFun/framework-spec) | XiHan Spec：RFC、术语表、协议映射与一致性向量 |
 | [XiHan.Framework](https://github.com/XiHanFun/XiHan.Framework) | .NET 参考实现 |
-| [framework-sdk-go](https://github.com/XiHanFun/framework-sdk-go) | Go SDK，含进程外插件运行时 |
+| [framework-sdk-go](https://github.com/XiHanFun/framework-sdk-go) | Go SDK |
 | [framework-sdk-rust](https://github.com/XiHanFun/framework-sdk-rust) | Rust SDK |
 | [framework-sdk-java](https://github.com/XiHanFun/framework-sdk-java) | Java SDK |
 | [framework-sdk-python](https://github.com/XiHanFun/framework-sdk-python) | Python SDK |
@@ -161,7 +161,7 @@ ADR-0004 把 TypeScript 定为 Go 之后的第二个 SDK。`v0.1.0`：原语、�
 
 欢迎提交 [Issue](https://github.com/XiHanFun/framework-sdk-typescript/issues) 与 Pull Request。
 
-1. 先读 framework-spec 的 README 与各 RFC，再看 framework-sdk-go 的包划分。
+1. 先读 framework-spec 的 README 与相关 RFC。
 2. 在本仓库开 Issue 认领要实现的模块，一个模块一个 PR，附向量测试。
 3. 公开契约的变更不在 SDK 仓库里做：走 framework-spec 的 RFC 流程，再同步到各 SDK。
 

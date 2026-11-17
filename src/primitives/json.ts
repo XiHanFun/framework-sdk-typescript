@@ -208,7 +208,8 @@ export function defineMember(target: object, name: string, value: unknown): void
  * 深拷贝并冻结一个 JSON 对象，对象的键按码元升序排列；不是 JSON 可表示的值抛出 {@link FrameworkError}
  *
  * @remarks
- * 键排序让线上编码确定，与 Go SDK 编码 `map[string]any` 时按键排序一致。数字按值模型保留：`bigint`、{@link Float64} 与 {@link JsonNumber} 原样，
+ * 键排序让同一组细节总写出同一段文本，日志与测试可以逐字比较；接收方按 JSON 值比较、不看成员顺序（RFC-0001「Result」）。
+ * 数字按值模型保留：`bigint`、{@link Float64} 与 {@link JsonNumber} 原样，
  * 非有限的浮点也可以放进细节，线上写成字符串 `NaN`、`Infinity`、`-Infinity`（RFC-0001「Result」，ADR-0236）
  *
  * @param value - 要拷贝的值；{@link JsonMembers} 转成普通对象

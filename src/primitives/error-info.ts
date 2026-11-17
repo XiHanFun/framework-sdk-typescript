@@ -238,7 +238,7 @@ export class ErrorInfo {
    * 线上编码：字段顺序 `code`、`message`、`messageKey`、`details`、`inner`，没有的省略
    *
    * @remarks
-   * 空的 `details` 省略，与 Go SDK 一致。细节里可以有 `bigint`、{@link Float64} 与非有限的浮点，
+   * 空的 `details` 不写（RFC-0001「Result」）。细节里可以有 `bigint`、{@link Float64} 与非有限的浮点，
    * 写成文本用 {@link writeJson}：`JSON.stringify` 写不出 `bigint`，也分不出整数与整数值的浮点
    */
   toJSON(): ErrorInfoJson {
