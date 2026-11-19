@@ -92,8 +92,14 @@ test('echo 插件通过规范黑盒运行器的全部用例（spec/conformance�
 }, async (t) => {
   const go = spawnSync('go', ['version'], { encoding: 'utf8' });
   if (go.error !== undefined || go.status !== 0) {
-    t.skip('go is not on PATH: the black-box runner of the spec runs with Go');
-    return;
+    // 缺 Go 默认失败，否则门禁会静默变绿；确实要跳过时显式设 XIHAN_CONFORMANCE_REQUIRED=0
+    if (process.env.XIHAN_CONFORMANCE_REQUIRED === '0') {
+      t.skip('go is not on PATH and XIHAN_CONFORMANCE_REQUIRED=0: the black-box runner of the spec runs with Go');
+      return;
+    }
+    assert.fail(
+      'go is not on PATH: the black-box runner of the spec runs with Go; install Go (https://go.dev/dl/) or set XIHAN_CONFORMANCE_REQUIRED=0 to skip this test',
+    );
   }
   const directory = await mkdtemp(join(tmpdir(), 'xihan-echo-ts-'));
   try {

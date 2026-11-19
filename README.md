@@ -207,7 +207,7 @@ The spec requires each SDK to document how its language's values map to the valu
 
 ## Development
 
-Requires Node 24 and pnpm 11; the plugin conformance test also needs Go (version in `spec/conformance/go.mod`) and is skipped without it.
+Requires Node 24 and pnpm 11; the plugin conformance test also needs Go (version in `spec/conformance/go.mod`) and fails without it; to skip it on purpose, set `XIHAN_CONFORMANCE_REQUIRED=0`.
 
 ```bash
 git submodule update --init          # spec/
@@ -218,7 +218,7 @@ pnpm test                            # node:test, running the TypeScript sources
 pnpm generate                        # regenerate src/plugin/gen from spec/plugin/plugin.proto (buf + ts-proto)
 ```
 
-Tests use Node's built-in `node:test` rather than vitest: it adds no development dependency, Node 24 strips types natively, and the tests self-reference the package by name (`xihan-framework/<module>`), loading the TypeScript sources directly through the custom export condition `xihan-source`, so no build is needed first and the public entry point of each subpath is what gets tested. The sources use only erasable syntax (`erasableSyntaxOnly`) and import each other with the `.ts` extension, rewritten to `.js` at build time. The development dependencies are `typescript`, `@types/node`, `@biomejs/biome`, the plugin runtime's `@grpc/grpc-js` and `@bufbuild/protobuf` (also optional peerDependencies), and `@bufbuild/buf` and `ts-proto` for generating the protocol code; the generated code skips Biome (`biome.json` excludes `src/plugin/gen`) but is type-checked as usual, and CI regenerates it and checks that it matches what is committed. `test/plugin-conformance.test.ts` runs `go run ./cmd/xihan-conformance` in `spec/conformance`, and the runner's Go dependencies are downloaded through `GOPROXY`.
+Tests use Node's built-in `node:test` rather than vitest: it adds no development dependency, Node 24 strips types natively, and the tests self-reference the package by name (`xihan-framework/<module>`), loading the TypeScript sources directly through the custom export condition `xihan-source`, so no build is needed first and the public entry point of each subpath is what gets tested. The sources use only erasable syntax (`erasableSyntaxOnly`) and import each other with the `.ts` extension, rewritten to `.js` at build time. The development dependencies are `typescript`, `@types/node`, `@biomejs/biome`, the plugin runtime's `@grpc/grpc-js` and `@bufbuild/protobuf` (also optional peerDependencies), and `@bufbuild/buf` and `ts-proto` for generating the protocol code; the generated code skips Biome (`biome.json` excludes `src/plugin/gen`) but is type-checked as usual, and CI regenerates it and checks that it matches what is committed. `test/plugin-conformance.test.ts` runs `go run ./cmd/xihan-conformance` in `spec/conformance`, and the runner's Go dependencies are downloaded through `GOPROXY`. `test/conformance-vectors.test.ts` checks that every vector file in `spec/conformance/vectors` is either replayed by a test or exempted with a reason: when the spec adds a vector file it fails until the file is replayed or added to the exemptions with a reason.
 
 ## Status
 

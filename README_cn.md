@@ -207,7 +207,7 @@ go run ./cmd/xihan-conformance plugin --dir <插件目录> --config '{"greeting"
 
 ## 开发
 
-需要 Node 24 与 pnpm 11；插件的一致性测试还需要 Go（版本见 `spec/conformance/go.mod`），没有 Go 时它跳过。
+需要 Node 24 与 pnpm 11；插件的一致性测试还需要 Go（版本见 `spec/conformance/go.mod`），没有 Go 时它失败，确实要跳过时设 `XIHAN_CONFORMANCE_REQUIRED=0`。
 
 ```bash
 git submodule update --init          # spec/
@@ -218,7 +218,7 @@ pnpm test                            # node:test，直接跑 TypeScript 源码
 pnpm generate                        # 从 spec/plugin/plugin.proto 重新生成 src/plugin/gen（buf + ts-proto）
 ```
 
-测试用 Node 内置的 `node:test` 而不是 vitest：不多一个开发依赖，Node 24 原生剥离类型，测试按包名自引用（`xihan-framework/<模块>`），经自定义导出条件 `xihan-source` 直接加载 TypeScript 源码，不必先构建，也就测到了各子路径的公开入口。源码只用可擦除的语法（`erasableSyntaxOnly`），以 `.ts` 扩展名互相导入，构建时改写为 `.js`。开发依赖是 `typescript`、`@types/node`、`@biomejs/biome`，插件运行时的 `@grpc/grpc-js` 与 `@bufbuild/protobuf`（同时是可选的 peerDependencies），以及生成协议代码的 `@bufbuild/buf` 与 `ts-proto`；生成代码不过 Biome（`biome.json` 排除 `src/plugin/gen`），类型检查照常，CI 重新生成并核对与提交的一致。`test/plugin-conformance.test.ts` 在 `spec/conformance` 里 `go run ./cmd/xihan-conformance`，运行器的 Go 依赖按 `GOPROXY` 下载。
+测试用 Node 内置的 `node:test` 而不是 vitest：不多一个开发依赖，Node 24 原生剥离类型，测试按包名自引用（`xihan-framework/<模块>`），经自定义导出条件 `xihan-source` 直接加载 TypeScript 源码，不必先构建，也就测到了各子路径的公开入口。源码只用可擦除的语法（`erasableSyntaxOnly`），以 `.ts` 扩展名互相导入，构建时改写为 `.js`。开发依赖是 `typescript`、`@types/node`、`@biomejs/biome`，插件运行时的 `@grpc/grpc-js` 与 `@bufbuild/protobuf`（同时是可选的 peerDependencies），以及生成协议代码的 `@bufbuild/buf` 与 `ts-proto`；生成代码不过 Biome（`biome.json` 排除 `src/plugin/gen`），类型检查照常，CI 重新生成并核对与提交的一致。`test/plugin-conformance.test.ts` 在 `spec/conformance` 里 `go run ./cmd/xihan-conformance`，运行器的 Go 依赖按 `GOPROXY` 下载。`test/conformance-vectors.test.ts` 核对 `spec/conformance/vectors` 下的每个向量文件要么有测试回放、要么豁免并写明理由：规范新增向量文件时它失败，要么回放，要么写进豁免并给出理由。
 
 ## 状态
 
