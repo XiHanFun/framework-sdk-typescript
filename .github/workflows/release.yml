@@ -17,7 +17,7 @@ on:
   workflow_dispatch:
   push:
     tags:
-      - 'v*'
+      - "v*"
 
 concurrency:
   group: release-${{ github.ref }}
@@ -57,7 +57,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write  # 颁发 GitHub OIDC 令牌，npm 用它换取这一次发布的凭据并签发来源证明
+      id-token: write # 颁发 GitHub OIDC 令牌，npm 用它换取这一次发布的凭据并签发来源证明
 
     steps:
       - name: 检出（含规范 submodule）
