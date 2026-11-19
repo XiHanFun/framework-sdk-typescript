@@ -37,6 +37,8 @@ framework-sdk-typescript 是 XiHan Framework 的 TypeScript SDK，[XiHan Spec](h
 ├─ .claude/skills -> ../.agents/skills    # Claude Code 技能兼容入口
 ├─ CLAUDE.md -> AGENTS.md                 # Claude Code 仓库指令入口
 ├─ .github/workflows/ci.yml               # 门禁：格式与静态检查、构建与类型检查、测试、生成物核对
+├─ .github/workflows/release.yml          # 发布：推送 v* 标签触发，核对后发布到 npm
+├─ scripts/release-check.sh               # 发版核对：打标签之前与 release.yml 的 guard 都跑它
 ├─ spec/                                  # 规范（XiHanFun/framework-spec 的 submodule）：RFC、术语表、清单 Schema、插件协议、一致性档表、向量与黑盒运行器
 ├─ src/
 │  ├─ primitives/                         # xihan-framework/primitives（RFC-0001、RFC-0010）
@@ -75,6 +77,7 @@ framework-sdk-typescript 是 XiHan Framework 的 TypeScript SDK，[XiHan Spec](h
 | 核对生成物 | `pnpm generate` 后 `git status --porcelain -- src/plugin/gen` 必须为空 |
 | 全部门禁 | `pnpm install --frozen-lockfile && pnpm check && pnpm typecheck && pnpm test`，再核对生成物 |
 | 黑盒运行器 | `cd spec/conformance && go run ./cmd/xihan-conformance plugin --dir <插件目录> --exclude echoes.crash --sample 'echoes.create={"text":"hi"}'` |
+| 发版核对 | `bash scripts/release-check.sh vX.Y.Z main`（打标签之前跑，联网取 `origin/main` 与规范的远端标签） |
 
 插件一致性测试需要 Go，没有 Go 时它失败；确实要跳过时设 `XIHAN_CONFORMANCE_REQUIRED=0`，并在结果里说明。运行器的 Go 依赖经 `GOPROXY` 下载。
 
@@ -121,17 +124,18 @@ framework-sdk-typescript 是 XiHan Framework 的 TypeScript SDK，[XiHan Spec](h
 
 ## 发布
 
-- 版本真源是 `package.json` 的 `version`；npm 包名是不带作用域的 `xihan-framework`。
-- 还没有发布到 npm；仓库没有发布工作流，也没有版本标签。
-- 发布要用户自己的 npm 凭据，只在用户明确要求时执行；agent 不登录 npm、不输入令牌。
-- `files` 只含 `dist`（去掉 `dist/.tsbuildinfo`），`package.json` 没有 `prepack` 或 `prepublishOnly` 钩子，发布前要先 `pnpm build`。
-- 发预发布或正式版时 `spec/` 子模块必须正好在规范标签上，正式版只能钉规范的正式版标签（RFC-0024「实现钉规范」）。本 SDK 自己的标签规则仓库里还没有约定，由用户决定。
+- 版本真源是 `package.json` 的 `version`，`src/primitives/framework.ts` 的 `sdkVersion` 要与它相同；npm 包名是不带作用域的 `xihan-framework`。
+- 还没有发布到 npm。标签写成 `v<版本>`，只从 `main` 打；推送 `v*` 标签触发 `.github/workflows/release.yml`：guard 跑 `scripts/release-check.sh`（标签在 `main` 上、标签号等于两处版本、规范钉在标签上），通过后构建并以 npm 可信发布（OIDC）发布；GitHub Release 与 XiHan.Framework 一样在标签推送后手动建。打标签之前先在本地跑同一份脚本。
+- 首次发布要用户自己用 npm 凭据手动发一次，再在 npmjs.com 配可信发布者；agent 不登录 npm、不输入令牌。打标签与推送只在用户明确要求时执行，步骤见 `version-release` 技能。
+- `files` 只含 `dist`（去掉 `dist/.tsbuildinfo`），`package.json` 没有 `prepack` 或 `prepublishOnly` 钩子，发布前要先 `pnpm build`（`release.yml` 会做）。
+- 发预发布或正式版时 `spec/` 子模块必须正好在规范标签上，正式版只能钉规范的正式版标签（RFC-0024「实现钉规范」）。
 
 ## 分支
 
 - 日常提交在 `dev`。
 - `main` 只在用户明确说「推送并快进 main」时由 `dev` 快进（`git fetch . dev:main`，不是快进就停下查）。
 - CI（`.github/workflows/ci.yml`）在推送到 `main` 或 `dev`、以及指向这两个分支的 PR 上运行，也可手动触发（`workflow_dispatch`）；矩阵是 `ubuntu-latest` 与 `windows-latest`，生成物核对只在 Ubuntu 上跑；同一引用的新运行会取消旧运行。
+- 发版工作流（`.github/workflows/release.yml`）只在推送 `v*` 标签、或手动运行时选中版本标签时运行，见「发布」与 `version-release` 技能。
 
 ## Git 与提交
 
