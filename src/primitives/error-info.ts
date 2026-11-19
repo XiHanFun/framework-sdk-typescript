@@ -4,6 +4,7 @@ import { FrameworkError } from './framework.ts';
 import { freezeJsonObject, isPlainObject, type JsonObject } from './json.ts';
 import { parseJson } from './json-text.ts';
 import { describe, isMessageKey, resolveMessage } from './messages.ts';
+import { isBlank } from './whitespace.ts';
 
 /**
  * {@link ErrorInfo} 的线上编码（RFC-0001）
@@ -72,12 +73,15 @@ export class ErrorInfo {
   /**
    * 用已解析的文案创建错误：线上还原与异常转换用，没有消息键
    *
-   * @throws {@link FrameworkError} 码不合法或文案为空时
+   * @throws {@link FrameworkError} 码不合法或文案为空、只有空白（RFC-0001「空白字符」）时
    */
   static literal(code: string, text: string, details?: JsonObject, inner?: ErrorInfo): ErrorInfo {
     checkCode(code);
-    if (typeof text !== 'string' || text === '') {
-      throw new FrameworkError(ErrorCode.InvalidArgument, 'A literal error needs a text.');
+    if (typeof text !== 'string' || isBlank(text)) {
+      throw new FrameworkError(
+        ErrorCode.InvalidArgument,
+        'A literal error needs a text that is not empty or whitespace.',
+      );
     }
     return new ErrorInfo(code, undefined, text, copyDetails(details), checkInner(inner));
   }
@@ -159,8 +163,11 @@ export class ErrorInfo {
       throw invalidErrorCode(typeof code === 'string' ? code : String(code));
     }
     const message = value.message;
-    if (typeof message !== 'string' || message === '') {
-      throw invalidWire("The field 'message' of an error on the wire must be a string that is not empty.");
+    // 空串与只有空白都不合法（RFC-0001「Result」与「空白字符」），两端的空白原样保留
+    if (typeof message !== 'string' || isBlank(message)) {
+      throw invalidWire(
+        "The field 'message' of an error on the wire must be a string that is not empty or whitespace.",
+      );
     }
     let messageKey: string | undefined;
     if (Object.hasOwn(value, 'messageKey')) {
@@ -225,11 +232,11 @@ export class ErrorInfo {
   /**
    * 填入已解析的文案
    *
-   * @throws {@link FrameworkError} 文案为空时
+   * @throws {@link FrameworkError} 文案为空或只有空白（RFC-0001「空白字符」）时
    */
   withText(text: string): ErrorInfo {
-    if (typeof text !== 'string' || text === '') {
-      throw new FrameworkError(ErrorCode.InvalidArgument, 'The text of an error must not be empty.');
+    if (typeof text !== 'string' || isBlank(text)) {
+      throw new FrameworkError(ErrorCode.InvalidArgument, 'The text of an error must not be empty or whitespace.');
     }
     return new ErrorInfo(this.code, this.messageKey, text, this.details, this.inner);
   }

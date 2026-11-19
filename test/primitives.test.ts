@@ -230,7 +230,7 @@ test('错误工厂核对 KIND 段', () => {
   );
   assert.equal(
     throwsCode(() => ErrorInfo.literal('ORDERS_NOTFOUND_001', ''), ErrorCode.InvalidArgument).message,
-    'A literal error needs a text.',
+    'A literal error needs a text that is not empty or whitespace.',
   );
   for (const [factory, code] of [
     [ErrorInfo.conflict, 'ORDERS_CONFLICT_001'],
@@ -243,6 +243,29 @@ test('错误工厂核对 KIND 段', () => {
   }
   const inner = ErrorInfo.literal('KERNEL_UNEXPECTED_001', 'boom');
   assert.equal(ErrorInfo.unexpected('ORDERS_UNEXPECTED_001', 'orders.failed', undefined, inner).inner, inner);
+});
+
+test('Literal 与 withText 的自由文本不能为空或只有空白，空白按 RFC-0001「空白字符」的 25 个码位判断', () => {
+  // 25 个码位各一个；U+0085 是 JavaScript 的 \s 与 trim 不认的那个
+  const units = [0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x20, 0x85, 0xa0, 0x1680, 0x2028, 0x2029, 0x202f, 0x205f, 0x3000];
+  for (let unit = 0x2000; unit <= 0x200a; unit += 1) {
+    units.push(unit);
+  }
+  const everyWhitespace = String.fromCharCode(...units);
+  assert.equal(everyWhitespace.length, 25);
+  for (const text of ['', ' ', ' ', everyWhitespace, '\u0085']) {
+    throwsCode(() => ErrorInfo.literal('ORDERS_VALIDATION_001', text), ErrorCode.InvalidArgument);
+    const keyed = ErrorInfo.validation('ORDERS_VALIDATION_001', 'orders.quantity.invalid');
+    assert.equal(
+      throwsCode(() => keyed.withText(text), ErrorCode.InvalidArgument).message,
+      'The text of an error must not be empty or whitespace.',
+    );
+  }
+  // U+001C 与 U+FEFF 不是空白（JavaScript 的 \s 与 trim 却认 U+FEFF），照常接受
+  for (const text of ['\u001c', '﻿']) {
+    assert.equal(ErrorInfo.literal('ORDERS_VALIDATION_001', text).message, text);
+    assert.equal(ErrorInfo.validation('ORDERS_VALIDATION_001', 'orders.quantity.invalid').withText(text).message, text);
+  }
 });
 
 test('错误的细节只收 JSON 值、冻结并按键排序', () => {

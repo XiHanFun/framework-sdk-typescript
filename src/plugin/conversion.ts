@@ -21,6 +21,7 @@ import {
   toJsonValue,
   writeJson,
 } from '../primitives/index.ts';
+import { isBlank } from '../primitives/whitespace.ts';
 import { effectiveDeadline, formatDeadline } from './deadline.ts';
 import { invalidErrorCodeReason, PluginReason, processFailed } from './errors.ts';
 import type * as pb from './gen/plugin.ts';
@@ -94,7 +95,8 @@ export function toProtoError(error: ErrorInfo): pb.Error {
  * @remarks
  * 码不合错误码文法时整个错误换成 `PLUGINS_UNEXPECTED_001` + `plugins.process.failed`（`phase` 一律为 `invoke`，
  * `Host.Publish` 的结果也一样；`reason` 为 `invalid error code '<code>'`；原来的 `inner` 丢掉）；消息键合文法的按键还原、
- * 不取 `text`，否则是自由文本错误，文案取 `text`，为空时取 `code`；`details` 按 {@link readDetails} 读；`inner` 同此。
+ * 不取 `text`，否则是自由文本错误，文案取 `text`，为空或只有空白（RFC-0001「空白字符」）时取 `code`；`details` 按
+ * {@link readDetails} 读；`inner` 同此。
  * 向量见 spec/conformance/vectors/plugin/error-reading.json
  *
  * @internal
@@ -108,7 +110,7 @@ export function fromProtoError(error: pb.Error, pluginId: string): ErrorInfo {
   if (error.messageKey !== '' && isMessageKey(error.messageKey)) {
     return ErrorInfo.create(error.code, error.messageKey, details, inner);
   }
-  return ErrorInfo.literal(error.code, error.text === '' ? error.code : error.text, details, inner);
+  return ErrorInfo.literal(error.code, isBlank(error.text) ? error.code : error.text, details, inner);
 }
 
 /**

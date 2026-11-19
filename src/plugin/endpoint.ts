@@ -6,7 +6,8 @@ import { join } from 'node:path';
 import { type Server, ServerCredentials } from '@grpc/grpc-js';
 
 import { ErrorCode, FrameworkError } from '../primitives/index.ts';
-import { EndpointNetwork, isEndpointWhitespace, type PluginEndpoint } from './protocol.ts';
+import { isWhitespace } from '../primitives/whitespace.ts';
+import { EndpointNetwork, type PluginEndpoint } from './protocol.ts';
 
 /** 插件自己监听的回环 TCP 地址：只写 `127.0.0.1:<端口>`（handshake.md §2），端口可以是 0（由系统分配） */
 const loopbackListenPattern = /^127\.0\.0\.1:([0-9]{1,5})$/;
@@ -145,7 +146,7 @@ function bind(server: Server, target: string): Promise<number> {
 /** 路径里有没有握手行所说的空白 */
 function hasWhitespace(text: string): boolean {
   for (let index = 0; index < text.length; index += 1) {
-    if (isEndpointWhitespace(text.charCodeAt(index))) {
+    if (isWhitespace(text.charCodeAt(index))) {
       return true;
     }
   }

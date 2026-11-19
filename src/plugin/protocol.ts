@@ -1,3 +1,5 @@
+import { isWhitespace } from '../primitives/whitespace.ts';
+
 /**
  * 协议 `xihan.plugin.v1` 的常量与文法（RFC-0017，spec/plugin/handshake.md）
  */
@@ -125,36 +127,10 @@ const endpointNetworks: readonly string[] = Object.values(EndpointNetwork);
 /** 主题文法（RFC-0009「信封」） */
 const topicPattern = /^[a-z0-9][a-z0-9._-]{0,127}$/;
 
-/**
- * 判断一个 UTF-16 码元是不是握手行与回调端点所说的空白（handshake.md §2）
- *
- * @remarks
- * U+0009–U+000D、U+0020、U+0085、U+00A0、U+1680、U+2000–U+200A、U+2028、U+2029、U+202F、U+205F、U+3000，
- * 与 .NET 正则的 `\s` 相同。JavaScript 的 `\s` 不含 U+0085、却含 U+FEFF，不能直接用；这些字符都在基本平面里，
- * 逐个码元比较与按码点比较结果相同
- *
- * @internal
- */
-export function isEndpointWhitespace(unit: number): boolean {
-  return (
-    (unit >= 0x09 && unit <= 0x0d) ||
-    unit === 0x20 ||
-    unit === 0x85 ||
-    unit === 0xa0 ||
-    unit === 0x1680 ||
-    (unit >= 0x2000 && unit <= 0x200a) ||
-    unit === 0x2028 ||
-    unit === 0x2029 ||
-    unit === 0x202f ||
-    unit === 0x205f ||
-    unit === 0x3000
-  );
-}
-
-/** 文本里有没有握手行所说的空白 */
+/** 文本里有没有握手行所说的空白（handshake.md §2，即 RFC-0001「空白字符」） */
 function hasEndpointWhitespace(text: string): boolean {
   for (let index = 0; index < text.length; index += 1) {
-    if (isEndpointWhitespace(text.charCodeAt(index))) {
+    if (isWhitespace(text.charCodeAt(index))) {
       return true;
     }
   }
