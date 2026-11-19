@@ -105,6 +105,9 @@ interface State {
   readonly items: Map<object, unknown>;
 }
 
+/** 读上下文自己的截止信号是否已触发，由 {@link InvocationContext} 的静态初始化块赋值 */
+let readDeadlineSignalled: (context: InvocationContext) => boolean;
+
 /**
  * 一次调用的上下文（RFC-0003）：取消与截止时间、W3C 追踪、已登记的 Baggage 与请求作用域对象袋
  *
@@ -114,6 +117,11 @@ interface State {
  */
 export class InvocationContext {
   readonly #state: State;
+
+  static {
+    // 私有字段只能在类体内读，这里把读截止信号的入口交给同包的 isDeadlineSignalled，公开类型里不多出成员
+    readDeadlineSignalled = (context) => context.#state.deadlineSignal?.aborted === true;
+  }
 
   private constructor(state: State) {
     this.#state = state;
@@ -336,6 +344,19 @@ export function cancellationOf(signal: AbortSignal): ErrorInfo | undefined {
     return undefined;
   }
   return isTimeoutReason(signal.reason) ? deadlineExceeded : cancelled;
+}
+
+/**
+ * 上下文自己的截止信号是否已触发；调用方传入的信号以 `TimeoutError` 中止也不算
+ *
+ * @remarks
+ * 截止信号的定时器按单调时钟触发，可能比墙上时钟先到截止时间，这时 {@link InvocationContext.isExpired} 还是假。
+ * 插件回调据此判断截止时间已到，交给 gRPC 自己的截止时间报 `DeadlineExceeded`，不抢先取消（invocation.md §5）
+ *
+ * @internal
+ */
+export function isDeadlineSignalled(context: InvocationContext): boolean {
+  return readDeadlineSignalled(context);
 }
 
 function isTimeoutReason(reason: unknown): boolean {

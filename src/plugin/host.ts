@@ -1,5 +1,6 @@
 import { credentials, Metadata, type ServiceError } from '@grpc/grpc-js';
 
+import { isDeadlineSignalled } from '../invocation/context.ts';
 import { type InvocationContext, ItemKey } from '../invocation/index.ts';
 import type { OperationResponse } from '../operation/index.ts';
 import { type ErrorInfo, Result } from '../primitives/index.ts';
@@ -227,7 +228,8 @@ export class Host {
       return tenantDenied(this.#pluginId, tenant);
     }
     const cancelled = context.signal.aborted;
-    if (context.isExpired(Date.now())) {
+    // 截止信号已触发也算截止时间已过：它的定时器按单调时钟，可能比墙上时钟先到
+    if (isDeadlineSignalled(context) || context.isExpired(Date.now())) {
       return mapCallbackStatus(rpc, GrpcCode.DeadlineExceeded, '', cancelled, this.#pluginId, operation);
     }
     if (cancelled) {
@@ -280,9 +282,10 @@ export class Host {
         resolve(Result.fail(failure));
       });
       // 调用方取消时取消回调；截止时间到了交给 gRPC 自己的截止时间（与上下文的相同），它报 DeadlineExceeded，
-      // 这里抢先取消会让 grpc-js 报成 Cancelled
+      // 这里抢先取消会让 grpc-js 报成 Cancelled。先看截止信号：它按单调时钟触发，墙上时钟可能还差一点才到截止时间，
+      // 只按时钟判断会把截止时间当成调用方取消
       const abort = () => {
-        if (!context.isExpired(Date.now())) {
+        if (!isDeadlineSignalled(context) && !context.isExpired(Date.now())) {
           call.cancel();
         }
       };

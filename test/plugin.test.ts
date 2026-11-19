@@ -2228,6 +2228,46 @@ test('回调途中到了截止时间按 DeadlineExceeded、调用方取消按 Ca
   }
 });
 
+test('截止信号比墙上时钟先到时回调仍按 DeadlineExceeded：发出前与途中都看截止信号，不只读时钟（invocation.md §5）', async () => {
+  const host = await fakeHost({
+    invoke: () =>
+      delay(1000).then(() => ({ status: { ok: true, error: undefined }, payload: new TextEncoder().encode('{}') })),
+  });
+  const plugin = await launch({}, { XIHAN_PLUGIN_HOST_ADDRESS: host.address });
+  const realNow = Date.now;
+  // 截止信号的定时器按单调时钟触发，墙上时钟可能还没到截止时间：创建上下文时让 Date.now 超前，
+  // 截止时间就比定时器晚，确定地造出「信号已触发、时钟未到」的先后
+  const createAhead = (lead: number, options: Parameters<typeof InvocationContext.create>[0]) => {
+    Date.now = () => realNow() + lead;
+    try {
+      return InvocationContext.create(options);
+    } finally {
+      Date.now = realNow;
+    }
+  };
+  try {
+    await startPlugin(plugin.client);
+    await invoke(plugin.client, 'probes.context');
+    const callback = findHost(plugin.probe.lastContext as InvocationContext);
+    assert.ok(callback !== undefined);
+    const expected = { code: 'KERNEL_TIMEOUT_001', key: 'kernel.invocation.deadline_exceeded', details: null };
+    // 发出前：信号已触发而墙上时钟离截止时间还有 1 秒，本地核对就按截止时间已过拒绝
+    const signalled = createAhead(5000, { deadline: realNow() + 1000 });
+    assert.ok(signalled.signal.aborted && !signalled.isExpired(Date.now()));
+    const refused = await callback.invoke(signalled, 'orders.get');
+    assert.deepEqual(!refused.outcome.ok && describeError(refused.outcome.error), expected);
+    assert.equal(host.received.length, 0, 'nothing is sent');
+    // 途中：信号在 200 毫秒触发，墙上时钟要到 300 毫秒才到截止时间，不能抢先取消回调
+    const timedOut = await callback.invoke(createAhead(100, { timeout: 200 }), 'orders.get');
+    assert.deepEqual(!timedOut.outcome.ok && describeError(timedOut.outcome.error), expected);
+    assert.equal(host.received.length, 1, 'the callback was sent');
+  } finally {
+    Date.now = realNow;
+    await plugin.close();
+    host.close();
+  }
+});
+
 // ── 端点、日志与目录 ──────────────────────────────────────────────────────────
 
 test('缺省端点：Unix 套接字放在新建的私有目录里（0700 / 0600），Windows 用命名管道；地址不含空白（handshake.md §2、§4）', async () => {
