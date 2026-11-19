@@ -1,0 +1,7 @@
+interface:
+  display_name: "TypeScript SDK 插件运行时"
+  short_description: "按插件协议实现进程外插件运行时并用黑盒运行器验证"
+  default_prompt: "使用 $xihan-sdk-typescript-plugin-runtime 实现或排查插件运行时的一项行为。"
+
+policy:
+  allow_implicit_invocation: true

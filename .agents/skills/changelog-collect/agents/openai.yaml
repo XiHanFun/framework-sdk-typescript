@@ -1,0 +1,7 @@
+interface:
+  display_name: "TypeScript SDK 变更整理"
+  short_description: "从提交与导出变化整理文档页的破坏性改动与迁移"
+  default_prompt: "使用 $xihan-sdk-typescript-changelog-collect 整理指定范围的破坏性改动与迁移。"
+
+policy:
+  allow_implicit_invocation: true

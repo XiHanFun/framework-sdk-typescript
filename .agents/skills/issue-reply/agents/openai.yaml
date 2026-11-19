@@ -1,0 +1,7 @@
+interface:
+  display_name: "TypeScript SDK Issue 回复"
+  short_description: "对照规范与 .NET 行为调查问题并给出有证据的回复"
+  default_prompt: "使用 $xihan-sdk-typescript-issue-reply 调查并回复指定的 GitHub Issue。"
+
+policy:
+  allow_implicit_invocation: true

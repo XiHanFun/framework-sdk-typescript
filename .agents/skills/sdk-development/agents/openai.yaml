@@ -1,0 +1,7 @@
+interface:
+  display_name: "TypeScript SDK 开发"
+  short_description: "按规范与 .NET 参考实现实现原语、清单、上下文、管道与操作"
+  default_prompt: "使用 $xihan-sdk-typescript-development 实现并验证一项 SDK 能力。"
+
+policy:
+  allow_implicit_invocation: true

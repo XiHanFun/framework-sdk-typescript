@@ -1,0 +1,7 @@
+interface:
+  display_name: "TypeScript SDK 测试验证"
+  short_description: "按 CI 跑格式、类型、测试、生成物与一致性门禁"
+  default_prompt: "使用 $xihan-sdk-typescript-testing-release 验证当前改动并报告门禁结果。"
+
+policy:
+  allow_implicit_invocation: true
