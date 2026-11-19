@@ -218,11 +218,19 @@ pnpm test                            # node:test，直接跑 TypeScript 源码
 pnpm generate                        # 从 spec/plugin/plugin.proto 重新生成 src/plugin/gen（buf + ts-proto）
 ```
 
-测试用 Node 内置的 `node:test` 而不是 vitest：不多一个开发依赖，Node 24 原生剥离类型，测试按包名自引用（`xihan-framework/<模块>`），经自定义导出条件 `xihan-source` 直接加载 TypeScript 源码，不必先构建，也就测到了各子路径的公开入口。源码只用可擦除的语法（`erasableSyntaxOnly`），以 `.ts` 扩展名互相导入，构建时改写为 `.js`。开发依赖是 `typescript`、`@types/node`、`@biomejs/biome`，插件运行时的 `@grpc/grpc-js` 与 `@bufbuild/protobuf`（同时是可选的 peerDependencies），以及生成协议代码的 `@bufbuild/buf` 与 `ts-proto`；生成代码不过 Biome（`biome.json` 排除 `src/plugin/gen`），类型检查照常，CI 重新生成并核对与提交的一致。`test/plugin-conformance.test.ts` 在 `spec/conformance` 里 `go run ./cmd/xihan-conformance`，运行器的 Go 依赖按 `GOPROXY` 下载。`test/conformance-vectors.test.ts` 核对 `spec/conformance/vectors` 下的每个向量文件要么有测试回放、要么豁免并写明理由：规范新增向量文件时它失败，要么回放，要么写进豁免并给出理由。
+测试用 Node 内置的 `node:test` 而不是 vitest：不多一个开发依赖，Node 24 原生剥离类型，测试按包名自引用（`xihan-framework/<模块>`），经自定义导出条件 `xihan-source` 直接加载 TypeScript 源码，不必先构建，也就测到了各子路径的公开入口。源码只用可擦除的语法（`erasableSyntaxOnly`），以 `.ts` 扩展名互相导入，构建时改写为 `.js`。开发依赖是 `typescript`、`@types/node`、`@biomejs/biome`，插件运行时的 `@grpc/grpc-js` 与 `@bufbuild/protobuf`（同时是可选的 peerDependencies），以及生成协议代码的 `@bufbuild/buf` 与 `ts-proto`；生成代码不过 Biome（`biome.json` 排除 `src/plugin/gen`），类型检查照常，CI 重新生成并核对与提交的一致。`test/plugin-conformance.test.ts` 在 `spec/conformance` 里 `go run ./cmd/xihan-conformance`，运行器的 Go 依赖按 `GOPROXY` 下载。`test/conformance-vectors.test.ts` 按 `spec/conformance/profiles.json` 里本 SDK 认领的档核对向量（RFC-0024）：规范在认领的档里新增向量时它失败，要么回放，要么列为缺口并写理由。
 
 ## 状态
 
 ADR-0004 把 TypeScript 定为 Go 之后的第二个 SDK。`v0.1.0`：原语、清单、调用上下文、管道与操作五个模块可用；进程外插件运行时 `plugin`（`xihan.plugin.v1`，基于 `@grpc/grpc-js`）可用，示例插件 echo 通过规范仓库黑盒运行器 `xihan-conformance plugin` 的全部 14 个用例（Windows 与 Linux）。流式操作的契约还没有定义（RFC-0017「非目标」），本 SDK 不实现流式调用，`InvokeStream` 读第一帧后以 `InvalidArgument` 或 `Unimplemented` 结束。远程 Provider 操作集（如 `caching.distributed@1`）仍未提供。规范列为宿主能力、语言 SDK 可以不提供的部分本 SDK 不提供：管道的运行期改动（`UseOwned` / `RemoveOwnedBy`）、Schema 校验、响应过滤与幂等回放还原响应（RFC-0004、RFC-0011 规则 10）。
+
+一致性（RFC-0024）：
+
+- 钉的规范版本：提交 `386501f`（规范还没有打标签，首个标签计划是 `v1.0.0-rc.1`）。
+- 认领的档：`core` 与 `plugin`。
+- 缺口：无。
+
+在有钉在规范标签上的发布版之前，成熟度是 Experimental。
 
 ## 生态
 

@@ -1,14 +1,23 @@
 import assert from 'node:assert/strict';
-import { existsSync, readdirSync } from 'node:fs';
-import { sep } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
+
+/**
+ * 本 SDK 认领的一致性档（RFC-0024「一致性档」，档表是 `spec/conformance/profiles.json`）
+ *
+ * @remarks
+ * 只对认领的档负责：认领的档要求的向量都要回放或列为缺口，档表里其他档的向量不归本 SDK
+ */
+const claimedProfiles: readonly string[] = ['core', 'plugin'];
 
 /**
  * 本 SDK 的测试回放的向量文件（相对 `spec/conformance/vectors/`，以 `/` 分隔）
  *
  * @remarks
- * 每一项都有测试读入并逐条核对，行尾注释是回放它的测试文件；新增回放时加进来，不再回放时删掉
+ * 每一项都有测试读入并逐条核对，行尾注释是回放它的测试文件；新增回放时加进来，不再回放时删掉。
+ * 回放认领的档以外的向量是允许的
  */
 const replayed: readonly string[] = [
   'manifest/manifests.json', // manifest.test.ts
@@ -32,28 +41,50 @@ const replayed: readonly string[] = [
   'primitives/wire-encoding.json', // primitives.test.ts
 ];
 
-/** 显式豁免的向量文件：文件 → 不回放的理由 */
-const exempted: Readonly<Record<string, string>> = {
-  'plugin/wasm-exports.json': 'Wasm ABI exports are checked by hosts; this SDK has no Wasm plugin runtime.',
-  'provider/caching-distributed.json': 'This SDK does not provide the caching.distributed@1 remote provider.',
-  'security/webauthn.json': 'WebAuthn verification is host-side (RFC-0008); this SDK does not verify credentials.',
-};
+/**
+ * 缺口：认领的档要求、本 SDK 却没有回放的向量文件 → 不回放的理由
+ *
+ * @remarks
+ * RFC-0024「实现钉规范」第 3 条要求 README 的「状态」一节逐条写出同样的缺口；目前没有
+ */
+const gaps: Readonly<Record<string, string>> = {};
 
-/** 规范子模块里的向量目录 */
-const vectorsDirectory = fileURLToPath(new URL('../spec/conformance/vectors', import.meta.url));
+/** 规范子模块里的一致性目录 */
+const conformanceDirectory = fileURLToPath(new URL('../spec/conformance', import.meta.url));
 
-test('规范的每个向量文件要么有测试回放，要么显式豁免并写明理由', () => {
-  assert.ok(existsSync(vectorsDirectory), `${vectorsDirectory} is missing; run \`git submodule update --init\``);
-  // 递归列出的路径按平台分隔，统一成 / 再与常量比较
-  const present = readdirSync(vectorsDirectory, { recursive: true, encoding: 'utf8' })
-    .filter((path) => path.endsWith('.json'))
-    .map((path) => path.split(sep).join('/'))
-    .sort();
-  const both = replayed.filter((file) => Object.hasOwn(exempted, file));
-  assert.deepEqual(both, [], `vector files both replayed and exempted: ${both.join(', ')}`);
-  const listed = [...replayed, ...Object.keys(exempted)].sort();
-  const missing = listed.filter((file) => !present.includes(file));
-  assert.deepEqual(missing, [], `listed vector files that the spec does not have: ${missing.join(', ')}`);
-  const unlisted = present.filter((file) => !listed.includes(file));
-  assert.deepEqual(unlisted, [], `spec vector files neither replayed nor exempted: ${unlisted.join(', ')}`);
+/** 档表 `profiles.json` 里的一个档，只取用到的成员 */
+interface Profile {
+  /** 档名 */
+  readonly id: string;
+  /** 认领这个档必须回放的向量，相对 `conformance/vectors` */
+  readonly vectors: readonly string[];
+}
+
+test('认领的档要求的每个向量要么被回放、要么列为缺口，回放的向量在规范里都存在（RFC-0024「一致性档」）', () => {
+  const profilesFile = join(conformanceDirectory, 'profiles.json');
+  assert.ok(existsSync(profilesFile), `${profilesFile} is missing; run \`git submodule update --init\``);
+  const { profiles } = JSON.parse(readFileSync(profilesFile, 'utf8')) as { profiles: Profile[] };
+
+  const undefinedProfiles = claimedProfiles.filter((id) => !profiles.some((profile) => profile.id === id));
+  assert.deepEqual(
+    undefinedProfiles,
+    [],
+    `claimed profiles that the spec does not define: ${undefinedProfiles.join(', ')}`,
+  );
+  // 一个向量可以属于多个档，认领的档要求的向量取并集
+  const claimed = profiles.filter((profile) => claimedProfiles.includes(profile.id));
+  const required = [...new Set(claimed.flatMap((profile) => profile.vectors))].sort();
+  const uncovered = required.filter((file) => !replayed.includes(file) && !Object.hasOwn(gaps, file));
+  assert.deepEqual(
+    uncovered,
+    [],
+    `vector files of the claimed profiles that are neither replayed nor listed as gaps: ${uncovered.join(', ')}`,
+  );
+  const gapFiles = Object.keys(gaps).sort();
+  const outside = gapFiles.filter((file) => !required.includes(file));
+  assert.deepEqual(outside, [], `gaps outside the claimed profiles: ${outside.join(', ')}`);
+  const replayedGaps = gapFiles.filter((file) => replayed.includes(file));
+  assert.deepEqual(replayedGaps, [], `gaps that are replayed; remove them from gaps: ${replayedGaps.join(', ')}`);
+  const missing = replayed.filter((file) => !existsSync(join(conformanceDirectory, 'vectors', file)));
+  assert.deepEqual(missing, [], `replayed vector files that the spec does not have: ${missing.join(', ')}`);
 });
