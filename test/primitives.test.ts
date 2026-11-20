@@ -639,7 +639,7 @@ test('框架信息与 FrameworkError', () => {
   assert.equal(FrameworkInfo.name, 'XiHan Framework');
   assert.equal(FrameworkInfo.specVersion, '1');
   assert.equal(FrameworkInfo.sdkName, 'framework-sdk-typescript');
-  assert.equal(FrameworkInfo.sdkVersion, '0.1.0');
+  assert.equal(FrameworkInfo.sdkVersion, '0.2.0-rc.1');
   const cause = new Error('io');
   const error = new FrameworkError('KERNEL_PIPELINE_001', 'The constraints form a cycle.', { cause });
   assert.ok(error instanceof Error);

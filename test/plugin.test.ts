@@ -815,7 +815,7 @@ test('握手交出清单的 primitives、去掉 BOM 的清单原文、一元操�
     assert.equal(response.primitives, 1);
     // 清单原文原样交出，去掉开头的 BOM，宿主据此与目录里的文件逐字段比较
     assert.equal(response.manifest, manifest);
-    assert.deepEqual(response.sdk, { name: 'framework-sdk-typescript', version: '0.1.0', language: 'typescript' });
+    assert.deepEqual(response.sdk, { name: 'framework-sdk-typescript', version: '0.2.0-rc.1', language: 'typescript' });
     assert.deepEqual(
       response.operations.map((operation) => operation.id),
       ['probes.context', 'probes.fail', 'probes.publish', 'probes.relay', 'probes.slow', 'probes.wait'],

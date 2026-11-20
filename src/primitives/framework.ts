@@ -15,7 +15,7 @@ export const FrameworkInfo = Object.freeze({
   /** 插件握手时上报的 SDK 名 */
   sdkName: 'framework-sdk-typescript',
   /** 本 SDK 的版本 */
-  sdkVersion: '0.1.0',
+  sdkVersion: '0.2.0-rc.1',
   /** SDK 仓库地址 */
   repository: 'https://github.com/XiHanFun/framework-sdk-typescript',
   /** 文档地址 */

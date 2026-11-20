@@ -1,6 +1,6 @@
 {
   "name": "xihan-framework",
-  "version": "0.1.0",
+  "version": "0.2.0-rc.1",
   "description": "XiHan Framework 的 TypeScript SDK：原语、清单、调用上下文、管道、操作契约与进程外插件运行时",
   "license": "MIT",
   "type": "module",
