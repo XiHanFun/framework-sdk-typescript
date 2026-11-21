@@ -125,7 +125,7 @@ framework-sdk-typescript 是 XiHan Framework 的 TypeScript SDK，[XiHan Spec](h
 ## 发布
 
 - 版本真源是 `package.json` 的 `version`，`src/primitives/framework.ts` 的 `sdkVersion` 要与它相同；npm 包名是不带作用域的 `xihan-framework`。
-- 还没有发布到 npm。标签写成 `v<版本>`，只从 `main` 打；推送 `v*` 标签触发 `.github/workflows/release.yml`：guard 跑 `scripts/release-check.sh`（标签在 `main` 上、标签号等于两处版本、规范钉在标签上），通过后构建并以 npm 可信发布（OIDC）发布；GitHub Release 与 XiHan.Framework 一样在标签推送后手动建。打标签之前先在本地跑同一份脚本。
+- npm 上的首个版本已手动发布并配好可信发布者，之后的版本由工作流发布；目前只有预发布版，README 与文档页写着「目前只有预发布版」，首个正式版发布后改掉。标签写成 `v<版本>`，只从 `main` 打；推送 `v*` 标签触发 `.github/workflows/release.yml`：guard 跑 `scripts/release-check.sh`（标签在 `main` 上、标签号等于两处版本、规范钉在标签上），通过后构建并以 npm 可信发布（OIDC）发布；GitHub Release 与 XiHan.Framework 一样在标签推送后手动建。打标签之前先在本地跑同一份脚本。
 - 首次发布要用户自己用 npm 凭据手动发一次，再在 npmjs.com 配可信发布者；agent 不登录 npm、不输入令牌。打标签与推送只在用户明确要求时执行，步骤见 `version-release` 技能。
 - `files` 只含 `dist`（去掉 `dist/.tsbuildinfo`），`package.json` 没有 `prepack` 或 `prepublishOnly` 钩子，发布前要先 `pnpm build`（`release.yml` 会做）。
 - 发预发布或正式版时 `spec/` 子模块必须正好在规范标签上，正式版只能钉规范的正式版标签（RFC-0024「实现钉规范」）。

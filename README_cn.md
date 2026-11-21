@@ -43,7 +43,7 @@
 pnpm add xihan-framework
 ```
 
-写插件时另装可选的 peer 依赖：`pnpm add @grpc/grpc-js @bufbuild/protobuf`。还没有发布到 npm，发布前在本仓库里使用。
+写插件时另装可选的 peer 依赖：`pnpm add @grpc/grpc-js @bufbuild/protobuf`。目前只有预发布版，正式版之前公开 API 还可能调整；版本列表见 [Releases](https://github.com/XiHanFun/framework-sdk-typescript/releases)。
 
 ## 快速开始
 
@@ -103,7 +103,7 @@ const wire = writeJson(typed); // 线上编码：数字按值模型写，不用 
 
 ## 状态
 
-在有钉在规范标签上的发布版之前，成熟度是 Experimental。认领的一致性档：`core` 与 `plugin`（RFC-0024）；缺口：无；钉的规范版本：`spec/` 子模块指向的提交。细节见[文档页](https://framework.docs.xihanfun.com/sdks/typescript)。
+成熟度是 Experimental：已有钉在规范 rc 标签上的预发布版，到 Stable 还要钉在规范正式版标签上的发布版。认领的一致性档：`core` 与 `plugin`（RFC-0024）；缺口：无；钉的规范版本：`spec/` 子模块指向的提交。细节见[文档页](https://framework.docs.xihanfun.com/sdks/typescript)。
 
 ## 生态
 

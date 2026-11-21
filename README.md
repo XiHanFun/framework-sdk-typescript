@@ -43,7 +43,7 @@ The whole SDK is a single ESM package, `xihan-framework`, with each module impor
 pnpm add xihan-framework
 ```
 
-Writing a plugin also needs the optional peer dependencies: `pnpm add @grpc/grpc-js @bufbuild/protobuf`. Not yet published to npm; until then, use it from this repository.
+Writing a plugin also needs the optional peer dependencies: `pnpm add @grpc/grpc-js @bufbuild/protobuf`. Only prereleases are published so far, and the public API may still change before the first stable release; versions are listed under [Releases](https://github.com/XiHanFun/framework-sdk-typescript/releases).
 
 ## Quick Start
 
@@ -105,7 +105,7 @@ The documentation site is in Chinese.
 
 ## Status
 
-Experimental until there is a release pinned to a spec tag. Claimed conformance profiles: `core` and `plugin` (RFC-0024); gaps: none; pinned spec version: the commit the `spec/` submodule points to. Details are on the [documentation page](https://framework.docs.xihanfun.com/sdks/typescript).
+The maturity is Experimental: there is a prerelease pinned to a spec rc tag, and Stable also needs a release pinned to a formal spec tag. Claimed conformance profiles: `core` and `plugin` (RFC-0024); gaps: none; pinned spec version: the commit the `spec/` submodule points to. Details are on the [documentation page](https://framework.docs.xihanfun.com/sdks/typescript).
 
 ## Ecosystem
 

@@ -8,7 +8,7 @@ description: 为 TypeScript SDK 准备版本、修改 package.json 的 version�
 ## 事实
 
 - 版本真源是 `package.json` 的 `version`；`src/primitives/framework.ts` 的 `sdkVersion`（插件握手时上报的 SDK 版本）必须与它相同。npm 包名是不带作用域的 `xihan-framework`，单包、子路径导出。
-- 还没有发布到 npm。标签写成 `v<版本>`（如 `v0.1.0`、`v0.1.0-rc.1`，与其他 SDK 相同），推送 `v*` 标签由 `.github/workflows/release.yml` 发布。
+- npm 上的首个版本已手动发布并配好可信发布者，之后的版本由工作流发布。目前只有预发布版，README 与文档页写着「目前只有预发布版」，首个正式版发布后改掉。标签写成 `v<版本>`（如 `v0.1.0`、`v0.1.0-rc.1`，与其他 SDK 相同），推送 `v*` 标签由 `.github/workflows/release.yml` 发布。
 - 包内容：`files` 只含 `dist`（去掉 `dist/.tsbuildinfo`），`dist` 由 `pnpm build` 生成；没有 `prepack` 或 `prepublishOnly` 钩子，发布前必须先构建。
 - 规范标签（RFC-0024「实现钉规范」）：发预发布或正式版时 `spec/` 子模块必须正好在规范标签上；正式版只能钉规范的正式版标签 `vX.Y.Z`，预发布可以钉 `vX.Y.Z-rc.N`。规范还没有对应的标签时，先由用户在 framework-spec 打（同一提交另有 `conformance/vX.Y.Z`）。
 - 成熟度（RFC-0024「成熟度」）：有钉在规范标签上的发布版之前是 Experimental；Stable 另要求认领的 `stable` 档没有缺口、钉的是规范正式版标签。
@@ -24,7 +24,7 @@ description: 为 TypeScript SDK 准备版本、修改 package.json 的 version�
 每一步都在用户要求之后才做：
 
 1. 工作区干净，在 `dev` 上，没有 merge、rebase 或冲突；版本号由用户给出。
-2. 核对上一次发布（还没有发布时从头）以来的公开导出与可观察行为变化，文档页「破坏性改动与迁移」已写全（见 changelog-collect）。
+2. 核对上一个标签以来的公开导出与可观察行为变化，文档页「破坏性改动与迁移」已写全（见 changelog-collect）。
 3. 把 `spec/` 指到规范标签，跑全部门禁（见 testing-release），README「状态」与文档页「一致性」写的档与缺口与 `test/conformance-vectors.test.ts` 一致。
 4. 改 `package.json` 的 `version` 与 `sdkVersion`，`pnpm build`，核对 `dist` 覆盖 `exports` 的每个子路径。
 5. 提交到 `dev`；推送与快进 `main` 只在用户明确要求时做，等 CI 全绿。
