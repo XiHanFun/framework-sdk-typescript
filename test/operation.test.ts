@@ -655,14 +655,21 @@ test('截止时间在 Resilience 阶段的内置步骤上核对，进入时不�
 });
 
 test('取消与截止时间只经信号通知，途中的取消在 Resilience 阶段归因', async () => {
-  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+  // 截止时间要留够余量，保证调用在它之前进入 Resilience 阶段：慢的 CI 上冷启动的第一次调用就要几毫秒，
+  // 截止时间先到会以 deadline_before_start 结束，到不了处理器
+  const deadline = 100;
+  // 处理器等信号触发再往下走，截止时间一定在处理器执行途中到达，不靠固定的睡眠时长去赌
+  const untilAborted = (signal: AbortSignal) =>
+    signal.aborted
+      ? Promise.resolve()
+      : new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }));
   const registry = new OperationRegistry();
   const contract = defineContract<{ readonly mode?: string | null }, string>({ id: 'slow.run', expose: [] });
   registry.add({
     contract,
     request: RequestShape.object({ mode: RequestShape.string() }),
     handler: async (context, request) => {
-      await sleep(30);
+      await untilAborted(context.signal);
       switch (request.mode) {
         case 'written':
           // 把取消写成结果，不知道是哪个信号触发的
@@ -697,11 +704,11 @@ test('取消与截止时间只经信号通知，途中的取消在 Resilience �
   const run = (mode: string, options: Parameters<typeof InvocationContext.create>[0]) =>
     invoker.invoke(InvocationContext.create(options), { id: 'slow.run', payload: JSON.stringify({ mode }) });
   // 截止时间到了，处理器仍照常返回：调用以那个结果结束，不被强行中止
-  const finished = await run('ignore', { timeout: 5 });
+  const finished = await run('ignore', { timeout: deadline });
   assert.ok(finished.outcome.ok);
   assert.equal(finished.payload, '"done"');
   // 截止信号已触发时，写成结果的取消按超时报告
-  const written = await run('written', { timeout: 5 });
+  const written = await run('written', { timeout: deadline });
   assert.equal(written.outcome.ok ? undefined : written.outcome.error.code, 'KERNEL_TIMEOUT_001');
   assert.equal(
     written.outcome.ok ? undefined : written.outcome.error.messageKey,
@@ -713,7 +720,7 @@ test('取消与截止时间只经信号通知，途中的取消在 Resilience �
   caller.abort();
   assert.equal(((await pending).outcome as { error?: ErrorInfo }).error?.code, 'KERNEL_CANCELLED_001');
   // 抛出的中止在 Resilience 阶段就归因成结果
-  const thrown = await run('thrown', { timeout: 5 });
+  const thrown = await run('thrown', { timeout: deadline });
   assert.equal(thrown.outcome.ok ? undefined : thrown.outcome.error.code, 'KERNEL_TIMEOUT_001');
   assert.deepEqual(observed, ['ok', 'KERNEL_TIMEOUT_001', 'KERNEL_CANCELLED_001', 'KERNEL_TIMEOUT_001']);
 });
