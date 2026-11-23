@@ -1,6 +1,6 @@
 name: CI
 
-# TypeScript SDK 的门禁：格式与静态检查、构建与类型检查、全部测试（含读取规范子模块里的一致性向量，
+# TypeScript SDK 的门禁：格式与静态检查、构建与类型检查、发布内容核对、全部测试（含读取规范子模块里的一致性向量，
 # 以及用规范的黑盒运行器跑示例插件 echo）、插件协议的生成代码与 spec/plugin/plugin.proto 一致。
 on:
   push:
@@ -22,6 +22,11 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest]
+        node: [24]
+        include:
+          # 包的 engines 是 >=22：下限在 Ubuntu 上另跑一档
+          - os: ubuntu-latest
+            node: 22
     runs-on: ${{ matrix.os }}
     steps:
       - name: 检出（含规范 submodule）
@@ -36,7 +41,7 @@ jobs:
       - name: 安装 Node
         uses: actions/setup-node@v5
         with:
-          node-version: 24
+          node-version: ${{ matrix.node }}
           cache: pnpm
 
       - name: 安装 Go
@@ -54,6 +59,10 @@ jobs:
 
       - name: 构建与类型检查
         run: pnpm typecheck
+
+      - name: 核对发布内容
+        # 上一步已构建 dist：pnpm pack --dry-run 列出的文件里 exports 的每个子路径都要有 .js 与 .d.ts，不带悬空的 map
+        run: pnpm check:pack
 
       - name: 测试
         run: pnpm test

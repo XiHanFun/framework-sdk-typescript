@@ -6,11 +6,12 @@
 | --- | --- | --- | --- |
 | 安装依赖 | `pnpm install --frozen-lockfile` | `package.json`、`pnpm-lock.yaml`、`pnpm-workspace.yaml`（依赖的安装脚本一律不跑） | 锁文件与清单不一致时用 `pnpm install` 更新锁文件并一起提交 |
 | 格式与静态检查 | `pnpm check`（`biome check .`） | `biome.json`：两个空格缩进、单引号、行宽 120、recommended；排除 `spec`、`**/*.md`、`src/plugin/gen` | `pnpm format` 修格式，lint 问题改代码 |
-| 构建与类型检查 | `pnpm typecheck`（`tsc -b && tsc -p tsconfig.test.json`） | `tsconfig.base.json`、`tsconfig.json`（`src` → `dist`）、`tsconfig.test.json`（`test`、`examples`，带 `customConditions: ["xihan-source"]`） | 改代码，不放宽编译选项 |
+| 构建与类型检查 | `pnpm typecheck`（`tsc -b && tsc -p tsconfig.test.json`） | `tsconfig.base.json`、`tsconfig.json`（`src` → `dist`）、`tsconfig.test.json`（`test`、`examples`、`scripts`，带 `customConditions: ["xihan-source"]`） | 改代码，不放宽编译选项 |
+| 核对发布内容 | `pnpm check:pack`（`node scripts/pack-check.ts`，要先构建） | `package.json` 的 `exports`、`files`、`sideEffects` | 子路径缺 `.js` 或 `.d.ts` 看构建与 `files`；有悬空的 map 时删掉 `dist` 重新构建 |
 | 测试 | `pnpm test`（`node --conditions=xihan-source --test "test/*.test.ts"`） | `test/` | 先单独跑失败的文件定位 |
 | 核对插件协议的生成代码（只在 Ubuntu） | `pnpm generate` 后 `git status --porcelain -- src/plugin/gen` 为空 | `buf.gen.yaml` | `.proto` 改了却没重新生成：`pnpm generate` 并提交生成物 |
 
-CI 矩阵：`ubuntu-latest` 与 `windows-latest`；Node 24；pnpm 取 `packageManager`；Go 取 `spec/conformance/go.mod`；检出带 submodule。触发：推送到 `main` 或 `dev`、指向它们的 PR、手动 `workflow_dispatch`；同一引用的新运行取消旧运行。
+CI 矩阵：`ubuntu-latest` 与 `windows-latest`，Node 24，外加 `ubuntu-latest` 上的 Node 22（`engines` 的下限）；pnpm 取 `packageManager`；Go 取 `spec/conformance/go.mod`；检出带 submodule。触发：推送到 `main` 或 `dev`、指向它们的 PR、手动 `workflow_dispatch`；同一引用的新运行取消旧运行。
 
 ## 测试文件
 

@@ -10,7 +10,7 @@ framework-sdk-typescript 是 XiHan Framework 的 TypeScript SDK，[XiHan Spec](h
 
 | 技术 | 要求 | 用途 |
 | --- | --- | --- |
-| Node.js | CI 用 24；包的 `engines` 是 `>=22` | 运行与测试（原生剥离类型，直接跑 `.ts`） |
+| Node.js | CI 用 24，Ubuntu 上另跑下限 22；包的 `engines` 是 `>=22` | 运行与测试（原生剥离类型，直接跑 `.ts`） |
 | pnpm | 11，以 `package.json` 的 `packageManager` 为准 | 包管理；`pnpm-workspace.yaml` 只是项目设置，不是多包工作区 |
 | TypeScript | 5.x，以 `devDependencies` 为准；`tsconfig.base.json` 严格模式 | 源码、构建（`tsc -b`）与类型检查 |
 | node:test | Node 内置 | 测试运行器 |
@@ -36,9 +36,10 @@ framework-sdk-typescript 是 XiHan Framework 的 TypeScript SDK，[XiHan Spec](h
 ├─ .agents/skills/                        # 按开发、插件运行时、测试和发布分类的仓库技能
 ├─ .claude/skills -> ../.agents/skills    # Claude Code 技能兼容入口
 ├─ CLAUDE.md -> AGENTS.md                 # Claude Code 仓库指令入口
-├─ .github/workflows/ci.yml               # 门禁：格式与静态检查、构建与类型检查、测试、生成物核对
+├─ .github/workflows/ci.yml               # 门禁：格式与静态检查、构建与类型检查、发布内容核对、测试、生成物核对
 ├─ .github/workflows/release.yml          # 发布：推送 v* 标签触发，核对后发布到 npm
 ├─ scripts/release-check.sh               # 发版核对：打标签之前与 release.yml 的 guard 都跑它
+├─ scripts/pack-check.ts                  # 发布内容核对（pnpm check:pack）：CI 与 release.yml 在构建之后跑它
 ├─ spec/                                  # 规范（XiHanFun/framework-spec 的 submodule）：RFC、术语表、清单 Schema、插件协议、一致性档表、向量与黑盒运行器
 ├─ src/
 │  ├─ primitives/                         # xihan-framework/primitives（RFC-0001、RFC-0010）
@@ -53,7 +54,7 @@ framework-sdk-typescript 是 XiHan Framework 的 TypeScript SDK，[XiHan Spec](h
 ├─ buf.gen.yaml                           # 协议代码生成配置
 ├─ tsconfig.base.json                     # 共用的编译选项
 ├─ tsconfig.json                          # 构建 src 到 dist
-├─ tsconfig.test.json                     # 测试与示例的类型检查
+├─ tsconfig.test.json                     # 测试、示例与脚本的类型检查
 └─ package.json                           # 包清单：exports、scripts、依赖
 ```
 
@@ -70,12 +71,13 @@ framework-sdk-typescript 是 XiHan Framework 的 TypeScript SDK，[XiHan Spec](h
 | 格式与静态检查 | `pnpm check` |
 | 自动修正格式 | `pnpm format` |
 | 构建 | `pnpm build` |
-| 构建与类型检查（含测试与示例） | `pnpm typecheck` |
+| 构建与类型检查（含测试、示例与脚本） | `pnpm typecheck` |
+| 核对发布内容（先构建） | `pnpm check:pack` |
 | 测试 | `pnpm test` |
 | 只跑一个测试文件 | `node --conditions=xihan-source --test test/<名>.test.ts` |
 | 生成协议代码 | `pnpm generate` |
 | 核对生成物 | `pnpm generate` 后 `git status --porcelain -- src/plugin/gen` 必须为空 |
-| 全部门禁 | `pnpm install --frozen-lockfile && pnpm check && pnpm typecheck && pnpm test`，再核对生成物 |
+| 全部门禁 | `pnpm install --frozen-lockfile && pnpm check && pnpm typecheck && pnpm check:pack && pnpm test`，再核对生成物 |
 | 黑盒运行器 | `cd spec/conformance && go run ./cmd/xihan-conformance plugin --dir <插件目录> --exclude echoes.crash --sample 'echoes.create={"text":"hi"}'` |
 | 发版核对 | `bash scripts/release-check.sh vX.Y.Z main`（打标签之前跑，联网取 `origin/main` 与规范的远端标签） |
 
@@ -127,14 +129,14 @@ framework-sdk-typescript 是 XiHan Framework 的 TypeScript SDK，[XiHan Spec](h
 - 版本真源是 `package.json` 的 `version`，`src/primitives/framework.ts` 的 `sdkVersion` 要与它相同；npm 包名是不带作用域的 `xihan-framework`。
 - npm 上的首个版本已手动发布并配好可信发布者，之后的版本由工作流发布；目前只有预发布版，README 与文档页写着「目前只有预发布版」，首个正式版发布后改掉。标签写成 `v<版本>`，只从 `main` 打；推送 `v*` 标签触发 `.github/workflows/release.yml`：guard 跑 `scripts/release-check.sh`（标签在 `main` 上、标签号等于两处版本、规范钉在标签上），通过后构建并以 npm 可信发布（OIDC）发布；GitHub Release 与 XiHan.Framework 一样在标签推送后手动建。打标签之前先在本地跑同一份脚本。
 - 首次发布要用户自己用 npm 凭据手动发一次，再在 npmjs.com 配可信发布者；agent 不登录 npm、不输入令牌。打标签与推送只在用户明确要求时执行，步骤见 `version-release` 技能。
-- `files` 只含 `dist`（去掉 `dist/.tsbuildinfo`），`package.json` 没有 `prepack` 或 `prepublishOnly` 钩子，发布前要先 `pnpm build`（`release.yml` 会做）。
+- `files` 只含 `dist`（去掉 `dist/.tsbuildinfo`），`package.json` 没有 `prepack` 或 `prepublishOnly` 钩子，发布前要先 `pnpm build`（`release.yml` 会做）。源码不发布，所以构建不生成 `declarationMap` 与 `sourceMap`（它们会指向包里没有的 `src/`）；`pnpm check:pack`（`scripts/pack-check.ts`）按 `pnpm pack --dry-run` 核对 `exports` 的每个子路径都有 `.js` 与 `.d.ts`、`sideEffects` 列出的文件在包里、没有悬空的 map，CI 与 `release.yml` 都跑它。
 - 发预发布或正式版时 `spec/` 子模块必须正好在规范标签上，正式版只能钉规范的正式版标签（RFC-0024「实现钉规范」）。
 
 ## 分支
 
 - 日常提交在 `dev`。
 - `main` 只在用户明确说「推送并快进 main」时由 `dev` 快进（`git fetch . dev:main`，不是快进就停下查）。
-- CI（`.github/workflows/ci.yml`）在推送到 `main` 或 `dev`、以及指向这两个分支的 PR 上运行，也可手动触发（`workflow_dispatch`）；矩阵是 `ubuntu-latest` 与 `windows-latest`，生成物核对只在 Ubuntu 上跑；同一引用的新运行会取消旧运行。
+- CI（`.github/workflows/ci.yml`）在推送到 `main` 或 `dev`、以及指向这两个分支的 PR 上运行，也可手动触发（`workflow_dispatch`）；矩阵是 `ubuntu-latest` 与 `windows-latest`（Node 24），外加 `ubuntu-latest` 上的 Node 22（`engines` 的下限），生成物核对只在 Ubuntu 上跑；同一引用的新运行会取消旧运行。
 - 发版工作流（`.github/workflows/release.yml`）只在推送 `v*` 标签、或手动运行时选中版本标签时运行，见「发布」与 `version-release` 技能。
 
 ## Git 与提交

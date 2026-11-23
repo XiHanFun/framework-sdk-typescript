@@ -16,6 +16,7 @@ git submodule update --init spec
 pnpm install --frozen-lockfile
 pnpm check
 pnpm typecheck
+pnpm check:pack
 pnpm test
 pnpm generate
 git status --porcelain -- src/plugin/gen   # 必须没有输出
@@ -28,7 +29,7 @@ git status --porcelain -- src/plugin/gen   # 必须没有输出
 
 ## 打包
 
-仓库没有打包验证的脚本或 CI 步骤。`files` 只含 `dist`（去掉 `dist/.tsbuildinfo`），`dist` 由 `pnpm build`（`tsc -b`）生成；`package.json` 没有 `prepack` 或 `prepublishOnly` 钩子。看包内容时先构建，再核对 `exports` 的每个子路径在 `dist` 里都有 `.js` 与 `.d.ts`。
+`pnpm check:pack`（`scripts/pack-check.ts`）核对发布内容，CI 在构建之后、`release.yml` 在发布之前跑它：按 `pnpm pack --dry-run` 列出的文件，`exports` 的每个子路径都有 `.js` 与 `.d.ts`，`sideEffects` 列出的 `dist` 文件在包里，包里的 map 引用的源文件也在包里，`.tsbuildinfo` 不进包。`files` 只含 `dist`（去掉 `dist/.tsbuildinfo`），`dist` 由 `pnpm build`（`tsc -b`）生成，不生成 `declarationMap` 与 `sourceMap`（源码不发布）；`package.json` 没有 `prepack` 或 `prepublishOnly` 钩子，所以先构建再核对。本机的 `dist` 里有旧构建留下的 `.map` 时核对不过：删掉 `dist` 重新构建。
 
 ## 本机没有工具链时
 

@@ -63,6 +63,7 @@
     "typecheck": "tsc -b && tsc -p tsconfig.test.json",
     "test": "node --conditions=xihan-source --test \"test/*.test.ts\"",
     "check": "biome check .",
+    "check:pack": "node scripts/pack-check.ts",
     "format": "biome check --write .",
     "generate": "buf generate"
   },

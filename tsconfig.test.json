@@ -4,9 +4,7 @@
     "noEmit": true,
     "composite": false,
     "declaration": false,
-    "declarationMap": false,
-    "sourceMap": false,
     "customConditions": ["xihan-source"]
   },
-  "include": ["test/**/*.ts", "examples/**/*.ts"]
+  "include": ["test/**/*.ts", "examples/**/*.ts", "scripts/**/*.ts"]
 }

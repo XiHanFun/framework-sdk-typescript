@@ -83,6 +83,10 @@ jobs:
         # 包只含 dist（package.json 的 files），没有 prepack 钩子，发布前必须先构建
         run: pnpm build
 
+      - name: 核对发布内容
+        # 与 CI 同一份脚本：exports 的每个子路径都有 .js 与 .d.ts，不带悬空的 map；不通过就不发布
+        run: pnpm check:pack
+
       - name: 发布
         # 可信发布要 npm 11.5.1 以上；这个版本已在 npm 上（重跑）就跳过
         env:
