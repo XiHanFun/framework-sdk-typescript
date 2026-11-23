@@ -1,6 +1,5 @@
 import {
   defineMember,
-  ErrorCode,
   Float64,
   FrameworkError,
   isIntegerNumber,
@@ -155,7 +154,7 @@ export class RequiredMember<T> {
   /** @internal 用 {@link RequestShape.required} 创建 */
   constructor(shape: RequestShape<T>) {
     if (!(shape instanceof RequestShape)) {
-      throw invalid('A required member needs a request shape.');
+      throw FrameworkError.invalidArgument('A required member needs a request shape.');
     }
     this.shape = shape;
     Object.freeze(this);
@@ -250,7 +249,7 @@ class ArrayShape<T> extends RequestShape<T[] | null> {
   constructor(item: RequestShape<T>) {
     super();
     if (!(item instanceof RequestShape)) {
-      throw invalid('An array shape needs a request shape for its items.');
+      throw FrameworkError.invalidArgument('An array shape needs a request shape for its items.');
     }
     this.#item = item;
     Object.freeze(this);
@@ -285,7 +284,7 @@ class RecordShape<T> extends RequestShape<Record<string, T> | null> {
   constructor(value: RequestShape<T>) {
     super();
     if (!(value instanceof RequestShape)) {
-      throw invalid('A record shape needs a request shape for its values.');
+      throw FrameworkError.invalidArgument('A record shape needs a request shape for its values.');
     }
     this.#value = value;
     Object.freeze(this);
@@ -326,7 +325,7 @@ class ObjectShape extends RequestShape<Record<string, unknown> | null> {
   constructor(members: RequestShapeMembers) {
     super();
     if (typeof members !== 'object' || members === null) {
-      throw invalid('An object shape needs its members.');
+      throw FrameworkError.invalidArgument('An object shape needs its members.');
     }
     const shapes = new Map<string, RequestShape<unknown>>();
     const required: string[] = [];
@@ -337,7 +336,7 @@ class ObjectShape extends RequestShape<Record<string, unknown> | null> {
       } else if (member instanceof RequestShape) {
         shapes.set(name, member);
       } else {
-        throw invalid(`The member '${name}' of an object shape needs a request shape.`);
+        throw FrameworkError.invalidArgument(`The member '${name}' of an object shape needs a request shape.`);
       }
     }
     this.#members = shapes;
@@ -388,7 +387,7 @@ class CustomShape<T> extends RequestShape<T> {
   constructor(decode: (value: JsonValue, path: string) => T) {
     super();
     if (typeof decode !== 'function') {
-      throw invalid('A custom request shape needs a decode function.');
+      throw FrameworkError.invalidArgument('A custom request shape needs a decode function.');
     }
     this.#decode = decode;
     Object.freeze(this);
@@ -408,8 +407,4 @@ class CustomShape<T> extends RequestShape<T> {
       throw new RequestDecodeError(path, error instanceof Error ? error.message : String(error));
     }
   }
-}
-
-function invalid(message: string): FrameworkError {
-  return new FrameworkError(ErrorCode.InvalidArgument, message);
 }

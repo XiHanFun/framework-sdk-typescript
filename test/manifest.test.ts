@@ -33,7 +33,7 @@ import {
   validateManifest,
   writeManifest,
 } from 'xihan-framework/manifest';
-import { readManifestFile } from 'xihan-framework/manifest/node';
+import { readManifestBytes, readManifestFile, readManifestSource } from 'xihan-framework/manifest/node';
 import {
   ErrorCode,
   type ErrorInfo,
@@ -515,4 +515,47 @@ test('写出前核对程序里构造的清单', () => {
     () => writeManifest({ id: 'xihan.a.b', version: '1.0.0', primitives: 1, stability: 'stable', kind: 'plugin' }),
     (error: unknown) => error instanceof FrameworkError && error.messageKey === ManifestMessageKey.IsolationRequired,
   );
+});
+
+test('读取清单文件连同原文：原文按严格的 UTF-8 解码、不带 BOM，与读出的清单来自同一段字节', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'xihan-manifest-source-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const bomBytes = Buffer.from([0xef, 0xbb, 0xbf]);
+  const path = join(directory, ManifestFileName);
+  await writeFile(path, Buffer.concat([bomBytes, Buffer.from(echoManifest)]));
+  const source = unwrap(await readManifestSource(path));
+  assert.equal(source.text, echoManifest, 'the text carries no BOM');
+  assert.equal(source.manifest.id, 'xihan.samples.echo');
+  assert.deepEqual(source.manifest, read(source.text), 'the manifest is what the text reads as');
+  assert.ok(Object.isFrozen(source));
+  assert.deepEqual(unwrap(await readManifestSource(pathToFileURL(path))), source);
+  // readManifestFile 是它只取清单的特例
+  assert.deepEqual(unwrap(await readManifestFile(path)), source.manifest);
+
+  // 已经在内存里的文件内容走同一个解码：BOM 跳过一次，非 ASCII 原样
+  const localized = echoManifest.replace('"entry": "EchoPlugin"', '"entry": "回声"');
+  assert.notEqual(localized, echoManifest);
+  assert.equal(unwrap(readManifestBytes(Buffer.from(localized))).text, localized);
+  assert.equal(unwrap(readManifestBytes(Buffer.concat([bomBytes, Buffer.from(localized)]))).text, localized);
+  assert.equal(
+    failed(readManifestBytes(Buffer.concat([bomBytes, bomBytes, Buffer.from(echoManifest)]))).messageKey,
+    ManifestMessageKey.InvalidJson,
+    'only one BOM is skipped',
+  );
+
+  // 字符串值里的坏字节：宽松的解码会把它换成 U+FFFD、读出一份与文件字节不同的清单，这里按 JSON 文本不合法拒绝
+  const bytes = Buffer.from(echoManifest);
+  const corrupted = Buffer.from(bytes);
+  corrupted[bytes.indexOf('EchoPlugin')] = 0xff;
+  await writeFile(path, corrupted);
+  for (const result of [readManifestBytes(corrupted), await readManifestSource(path), await readManifestFile(path)]) {
+    const error = failed(result as Result<unknown>);
+    assert.equal(error.code, ManifestErrorCode.Invalid);
+    assert.equal(error.messageKey, ManifestMessageKey.InvalidJson);
+    assert.deepEqual(error.details, { reason: '$' });
+  }
+  const missing = join(directory, 'missing.json');
+  const absent = failed(await readManifestSource(missing));
+  assert.equal(absent.messageKey, ManifestMessageKey.FileMissing);
+  assert.deepEqual(absent.details, { path: missing });
 });

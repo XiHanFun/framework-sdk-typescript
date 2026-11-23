@@ -1,12 +1,6 @@
 import type { InvocationContext } from '../invocation/index.ts';
-import {
-  ErrorCode,
-  FrameworkError,
-  isPipelineStage,
-  PipelineStage,
-  pipelineStages,
-  type Result,
-} from '../primitives/index.ts';
+import { FrameworkError, isPipelineStage, PipelineStage, pipelineStages, type Result } from '../primitives/index.ts';
+import { compareOrdinal } from '../primitives/ordinal.ts';
 
 /**
  * 内核登记的管道错误码
@@ -147,7 +141,7 @@ export class PipelineBuilder {
     owner?: string,
   ): this {
     if (typeof instance !== 'string' || instance === '') {
-      throw invalid('The instance name of a middleware must not be empty.');
+      throw FrameworkError.invalidArgument('The instance name of a middleware must not be empty.');
     }
     return this.#add(middleware, instance, stage, placement ?? Placement.End, owner ?? AppOwner);
   }
@@ -242,19 +236,21 @@ export class PipelineBuilder {
     owner: string,
   ): this {
     if (typeof middleware?.invoke !== 'function') {
-      throw invalid('A middleware needs an invoke function.');
+      throw FrameworkError.invalidArgument('A middleware needs an invoke function.');
     }
     if (typeof middleware.name !== 'string' || middleware.name === '') {
-      throw invalid('The name of a middleware must not be empty.');
+      throw FrameworkError.invalidArgument('The name of a middleware must not be empty.');
     }
     if (!isPipelineStage(stage)) {
       throw unknownStage(String(stage));
     }
     if (placement !== Placement.Beginning && placement !== Placement.End) {
-      throw invalid(`The placement '${String(placement)}' of '${middleware.name}' is not valid.`);
+      throw FrameworkError.invalidArgument(
+        `The placement '${String(placement)}' of '${middleware.name}' is not valid.`,
+      );
     }
     if (typeof owner !== 'string' || owner === '') {
-      throw invalid(`The owner of '${middleware.name}' must not be empty.`);
+      throw FrameworkError.invalidArgument(`The owner of '${middleware.name}' must not be empty.`);
     }
     const display = instance === undefined ? middleware.name : `${middleware.name}[${instance}]`;
     // 重复登记在登记时立即报，不等到排序（RFC-0004 排序规则第 8 条，照 .NET）：同一类型的默认实例只登记一次，
@@ -310,8 +306,9 @@ function compareBase(left: Registration, right: Registration): number {
   if (left.descriptor.placement !== right.descriptor.placement) {
     return left.descriptor.placement === Placement.Beginning ? -1 : 1;
   }
-  if (left.descriptor.owner !== right.descriptor.owner) {
-    return left.descriptor.owner < right.descriptor.owner ? -1 : 1;
+  const owners = compareOrdinal(left.descriptor.owner, right.descriptor.owner);
+  if (owners !== 0) {
+    return owners;
   }
   return left.order - right.order;
 }
@@ -423,8 +420,4 @@ function registrationError(message: string): FrameworkError {
 
 function unknownStage(name: string): FrameworkError {
   return new FrameworkError(PipelineErrorCode.UnknownStage, `Unknown pipeline stage '${name}'.`);
-}
-
-function invalid(message: string): FrameworkError {
-  return new FrameworkError(ErrorCode.InvalidArgument, message);
 }

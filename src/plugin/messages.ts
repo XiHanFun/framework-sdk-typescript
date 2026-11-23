@@ -1,4 +1,23 @@
+import { registerBuiltInTemplates } from '../primitives/built-in-messages.ts';
 import { MessageCatalog } from '../primitives/index.ts';
+
+/** 运行时消息键的 en-US 模板：其他区域的基准，也是登记给原语层的内置模板 */
+const englishTemplates: Readonly<Record<string, string>> = Object.freeze({
+  'plugins.callback.denied':
+    "Plugin '{id}' may not use permission '{permission}': it must be declared in the manifest and granted by the host.",
+  'plugins.callback.tenant_denied':
+    "Plugin '{id}' may not act in tenant '{tenant}': a callback can only carry the tenant of a call the host has handed to the plugin.",
+  'plugins.callback.session_invalid': 'The plugin session token is missing or invalid.',
+  'plugins.event.unsubscribed':
+    "Plugin '{id}' has no subscription for topic '{topic}', type '{type}' and mode '{mode}'.",
+  'plugins.host.unavailable': "Plugin '{id}' cannot reach the host: {reason}",
+  'plugins.process.failed': "Plugin '{id}' failed during {phase}: {reason}",
+  'plugins.process.unavailable': "Plugin '{id}' is not available (state: {state}).",
+});
+
+// 模块加载时的副作用：把 plugins.* 的 en-US 模板登记给原语层，ErrorInfo.message 的英文回退才认得它们
+// （host.invoke 返回的 plugins.host.unavailable 等不再读成「键 (参数)」）。这个文件因此列在 package.json 的 sideEffects 里
+registerBuiltInTemplates(englishTemplates);
 
 /**
  * 插件运行时的消息目录：10 种区域（RFC-0010），键、参数与 en-US 模板照 plugin/invocation.md §8 与
@@ -6,21 +25,11 @@ import { MessageCatalog } from '../primitives/index.ts';
  *
  * @remarks
  * 模板逐字取自参考实现插件协议包的语言文件。宿主有这些键的目录，SDK 不随握手发送它们（handshake.md §3 第 6 条）：
- * 写给宿主的错误只带键与参数、`text` 留空，由宿主按调用方的语言翻译；这里的文案只用于插件这一侧的本地渲染与日志
+ * 写给宿主的错误只带键与参数、`text` 留空，由宿主按调用方的语言翻译；这里的文案只用于插件这一侧的本地渲染与日志。
+ * 导入 `xihan-framework/plugin` 时 en-US 模板登记为内置模板：没有进程默认目录时，这些键的 `ErrorInfo.message` 就是英文文案
  */
 export const pluginTemplates: Readonly<Record<string, Readonly<Record<string, string>>>> = Object.freeze({
-  'en-US': Object.freeze({
-    'plugins.callback.denied':
-      "Plugin '{id}' may not use permission '{permission}': it must be declared in the manifest and granted by the host.",
-    'plugins.callback.tenant_denied':
-      "Plugin '{id}' may not act in tenant '{tenant}': a callback can only carry the tenant of a call the host has handed to the plugin.",
-    'plugins.callback.session_invalid': 'The plugin session token is missing or invalid.',
-    'plugins.event.unsubscribed':
-      "Plugin '{id}' has no subscription for topic '{topic}', type '{type}' and mode '{mode}'.",
-    'plugins.host.unavailable': "Plugin '{id}' cannot reach the host: {reason}",
-    'plugins.process.failed': "Plugin '{id}' failed during {phase}: {reason}",
-    'plugins.process.unavailable': "Plugin '{id}' is not available (state: {state}).",
-  }),
+  'en-US': englishTemplates,
   'zh-CN': Object.freeze({
     'plugins.callback.denied': "插件 '{id}' 不能使用权限 '{permission}'：权限须在清单中声明并由宿主授予。",
     'plugins.callback.tenant_denied':

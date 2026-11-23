@@ -50,7 +50,10 @@
     "dist",
     "!dist/.tsbuildinfo"
   ],
-  "sideEffects": false,
+  "sideEffects": [
+    "./dist/plugin/messages.js",
+    "./src/plugin/messages.ts"
+  ],
   "packageManager": "pnpm@11.22.0",
   "engines": {
     "node": ">=22"

@@ -5,7 +5,7 @@ import { join } from 'node:path';
 
 import { type Server, ServerCredentials } from '@grpc/grpc-js';
 
-import { ErrorCode, FrameworkError } from '../primitives/index.ts';
+import { FrameworkError } from '../primitives/index.ts';
 import { isWhitespace } from '../primitives/whitespace.ts';
 import { EndpointNetwork, type PluginEndpoint } from './protocol.ts';
 
@@ -73,7 +73,9 @@ export async function bindEndpoint(
   switch (network) {
     case EndpointNetwork.Unix: {
       if (process.platform === 'win32') {
-        throw invalid("Unix domain sockets are not available to Node.js on Windows; use 'npipe' or 'tcp'.");
+        throw FrameworkError.invalidArgument(
+          "Unix domain sockets are not available to Node.js on Windows; use 'npipe' or 'tcp'.",
+        );
       }
       let directory: string | undefined;
       let path = address;
@@ -105,7 +107,7 @@ export async function bindEndpoint(
     }
     case EndpointNetwork.NamedPipe: {
       if (process.platform !== 'win32') {
-        throw invalid("Named pipes are only available on Windows; use 'unix' or 'tcp'.");
+        throw FrameworkError.invalidArgument("Named pipes are only available on Windows; use 'unix' or 'tcp'.");
       }
       const pipe = address ?? `\\\\.\\pipe\\xihan-plugin-${randomBytes(8).toString('hex')}`;
       // grpc-js 的 unix 解析器把路径原样交给 net，Windows 上 net 把 \\.\pipe\ 开头的路径当作命名管道
@@ -116,13 +118,13 @@ export async function bindEndpoint(
       const match = loopbackListenPattern.exec(address ?? '127.0.0.1:0');
       const requested = Number(match?.[1] ?? Number.NaN);
       if (!(requested <= 65535)) {
-        throw invalid(`The tcp address '${address}' must be '127.0.0.1:<port>'.`);
+        throw FrameworkError.invalidArgument(`The tcp address '${address}' must be '127.0.0.1:<port>'.`);
       }
       const port = await bind(server, `127.0.0.1:${requested}`);
       return { endpoint: { network, address: `127.0.0.1:${port}` }, cleanup: () => {} };
     }
     default:
-      throw invalid(`The endpoint network '${String(network)}' is not supported.`);
+      throw FrameworkError.invalidArgument(`The endpoint network '${String(network)}' is not supported.`);
   }
 }
 
@@ -133,11 +135,7 @@ function bind(server: Server, target: string): Promise<number> {
       if (error === null) {
         resolve(port);
       } else {
-        reject(
-          new FrameworkError(ErrorCode.InvalidArgument, `The plugin could not listen on '${target}'.`, {
-            cause: error,
-          }),
-        );
+        reject(FrameworkError.invalidArgument(`The plugin could not listen on '${target}'.`, { cause: error }));
       }
     });
   });
@@ -151,8 +149,4 @@ function hasWhitespace(text: string): boolean {
     }
   }
   return false;
-}
-
-function invalid(message: string): FrameworkError {
-  return new FrameworkError(ErrorCode.InvalidArgument, message);
 }

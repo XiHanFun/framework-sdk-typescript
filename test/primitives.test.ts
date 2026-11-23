@@ -25,6 +25,7 @@ import {
   isLifecycleState,
   isLocaleName,
   isMessageKey,
+  isOperationId,
   isPipelineStage,
   isServing,
   isStability,
@@ -64,8 +65,18 @@ import {
   tryFormatMessage,
   typedId,
   validateErrorCode,
+  validateMessageKey,
+  validateOperationId,
   writeJson,
 } from 'xihan-framework/primitives';
+
+// 内置模板的登记入口只给 SDK 自己的模块用，不是公开导出：测试直接加载它核对登记的规则
+import { maxBuiltInTemplates, registerBuiltInTemplates } from '../src/primitives/built-in-messages.ts';
+
+/** 包清单里的版本：版本的真源，测试不另写一份 */
+const packageVersion = (
+  JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version: string }
+).version;
 
 /**
  * 直接读取规范子模块里的一致性向量，不复制向量文件
@@ -639,7 +650,8 @@ test('框架信息与 FrameworkError', () => {
   assert.equal(FrameworkInfo.name, 'XiHan Framework');
   assert.equal(FrameworkInfo.specVersion, '1');
   assert.equal(FrameworkInfo.sdkName, 'framework-sdk-typescript');
-  assert.equal(FrameworkInfo.sdkVersion, '0.2.0-rc.1');
+  // 握手上报的版本就是包的版本：真源是 package.json，测试里不写死版本号
+  assert.equal(FrameworkInfo.sdkVersion, packageVersion);
   const cause = new Error('io');
   const error = new FrameworkError('KERNEL_PIPELINE_001', 'The constraints form a cycle.', { cause });
   assert.ok(error instanceof Error);
@@ -834,4 +846,184 @@ test('数字按值模型读写', () => {
   expected.push(String.fromCharCode(0x7f), slash, 'ud800', 'é"');
   assert.equal(quoteJsonString(`q"b${slash}/${control}é`), expected.join(''));
   assert.equal(writeJson({ s: '😀' }), '{"s":"😀"}', 'paired surrogates stay as they are');
+});
+
+test('Maybe 里保留原文的数字照原文写出，往返不丢精度（Float64 与 JsonNumber 都不经 toJSON 换成 number）', () => {
+  const text = '12345678901234567890';
+  // 超出 64 位的整数读成保留原文的 JsonNumber；包进 Maybe 再写出仍是原文，不按浮点写成 1.2345678901234567E+19
+  assert.equal(writeJson(Maybe.some(new JsonNumber(text))), text);
+  assert.equal(
+    writeJson({ value: Maybe.some(new JsonNumber('0.1000000000000000000001')) }),
+    '{"value":0.1000000000000000000001}',
+  );
+  assert.equal(writeJson(Maybe.some(new Float64(2))), '2.0');
+  const wire = writeJson(Result.ok(Maybe.some(new JsonNumber(text))), { nonFinite: 'reject' });
+  assert.equal(wire, `{"ok":true,"value":${text}}`);
+  const back = Result.parseMaybe(wire, (value) => value);
+  assert.ok(back.ok && back.value.hasValue);
+  assert.deepEqual(back.value.value, new JsonNumber(text));
+  // 上溢的数字在无类型的值里按值模型写成字符串，与不包 Maybe 时相同
+  assert.equal(writeJson(Maybe.some(new JsonNumber('1e400'))), writeJson(new JsonNumber('1e400')));
+  // 值自己的 toJSON 照常替它调用
+  assert.equal(
+    writeJson(Maybe.some(ErrorInfo.literal('ORDERS_NOTFOUND_001', 'gone'))),
+    '{"code":"ORDERS_NOTFOUND_001","message":"gone"}',
+  );
+  assert.equal(writeJson(Maybe.some(Maybe.some(new JsonNumber(text)))), text);
+});
+
+test('FrameworkError.invalidArgument 与 fromErrorInfo：错误转成异常时保留消息键、参数与内部错误', () => {
+  const invalid = FrameworkError.invalidArgument("The name 'x' is not valid.");
+  assert.ok(invalid instanceof FrameworkError);
+  assert.equal(invalid.code, ErrorCode.InvalidArgument);
+  assert.equal(invalid.message, "The name 'x' is not valid.");
+  assert.equal(invalid.messageKey, undefined);
+  const cause = new Error('io');
+  assert.equal(FrameworkError.invalidArgument('It failed.', { cause }).cause, cause);
+
+  const inner = ErrorInfo.literal('KERNEL_UNEXPECTED_001', 'boom');
+  const error = ErrorInfo.create(
+    'KERNEL_OPERATION_001',
+    'kernel.operation.duplicate',
+    { id: 'a.b', owner: 'app' },
+    inner,
+  );
+  const thrown = FrameworkError.fromErrorInfo(error);
+  assert.equal(thrown.code, 'KERNEL_OPERATION_001');
+  assert.equal(thrown.message, "Operation 'a.b' is already registered by 'app'.");
+  assert.equal(thrown.messageKey, 'kernel.operation.duplicate');
+  assert.deepEqual(thrown.details, { id: 'a.b', owner: 'app' });
+  assert.ok(thrown.cause instanceof FrameworkError, 'the inner error becomes the cause');
+  assert.equal(thrown.cause.code, 'KERNEL_UNEXPECTED_001');
+  assert.equal(thrown.cause.message, 'boom');
+  // 转回去仍是带键与参数的错误
+  const back = thrown.toErrorInfo();
+  assert.equal(back.messageKey, error.messageKey);
+  assert.deepEqual(back.details, error.details);
+  // 自由文本的错误没有键，细节照带
+  const literal = FrameworkError.fromErrorInfo(ErrorInfo.literal('ORDERS_CONFLICT_001', 'stale', { id: 7 }));
+  assert.equal(literal.messageKey, undefined);
+  assert.deepEqual(literal.details, { id: 7 });
+  assert.equal(literal.cause, undefined);
+  throwsCode(() => FrameworkError.fromErrorInfo({ code: 'X' } as unknown as ErrorInfo), ErrorCode.InvalidArgument);
+
+  // valueOrThrow 以前只带码与消息，消息键与参数丢了
+  const failure = throwsCode(() => Result.fail(error).valueOrThrow(), 'KERNEL_OPERATION_001');
+  assert.equal(failure.messageKey, 'kernel.operation.duplicate');
+  assert.deepEqual(failure.details, { id: 'a.b', owner: 'app' });
+  assert.ok(failure.cause instanceof FrameworkError);
+});
+
+test('Result 的 toJSON：线上编码的形状，JSON.stringify 与 writeJson 写出的不变', () => {
+  assert.deepEqual(Result.ok({ id: 'o1' }).toJSON(), { ok: true, value: { id: 'o1' } });
+  const success = Result.success().toJSON();
+  assert.deepEqual(success, { ok: true });
+  assert.ok(!Object.hasOwn(success, 'value'), 'a result without a value carries no value member');
+  const error = ErrorInfo.validation('ORDERS_VALIDATION_001', 'orders.quantity.invalid', { min: 1 });
+  assert.deepEqual(Result.fail(error).toJSON(), { ok: false, error: error.toJSON() });
+  // 成员顺序是 ok、value / error
+  assert.deepEqual(Object.keys(Result.ok(1).toJSON()), ['ok', 'value']);
+  assert.deepEqual(Object.keys(Result.fail(error).toJSON()), ['ok', 'error']);
+  // 值原样交出：数字的身份留给 writeJson，Maybe 的无值由写出时的 toJSON 变成 null
+  const big = new JsonNumber('12345678901234567890');
+  assert.equal((Result.ok(big).toJSON() as { value: unknown }).value, big);
+  assert.equal(writeJson(Result.ok(big)), '{"ok":true,"value":12345678901234567890}');
+  assert.equal(writeJson(Result.ok(new Float64(2))), '{"ok":true,"value":2.0}');
+  assert.equal(writeJson(Result.ok(Maybe.none())), '{"ok":true,"value":null}');
+  assert.equal(JSON.stringify(Result.ok(Maybe.some('x'))), '{"ok":true,"value":"x"}');
+  assert.equal(writeJson(Result.success()), '{"ok":true}');
+  assert.equal(
+    writeJson(Result.fail(error)),
+    '{"ok":false,"error":{"code":"ORDERS_VALIDATION_001","message":"orders.quantity.invalid (min=1)","messageKey":"orders.quantity.invalid","details":{"min":1}}}',
+  );
+  // 写出的文本按读写规则读回同一个结果
+  const back = Result.parse(writeJson(Result.fail(error)));
+  assert.ok(!back.ok && back.error.code === error.code && back.error.messageKey === error.messageKey);
+  assert.deepEqual(Result.fromJSON(JSON.parse(JSON.stringify(Result.ok(5))), (raw) => Number(raw)).toJSON(), {
+    ok: true,
+    value: 5,
+  });
+});
+
+test('校验并原样返回：错误码、消息键与操作 ID', () => {
+  assert.equal(validateErrorCode('ORDERS_NOTFOUND_001'), 'ORDERS_NOTFOUND_001');
+  assert.equal(validateMessageKey('orders.quantity.invalid'), 'orders.quantity.invalid');
+  for (const key of ['', 'orders', 'Orders.missing', 'orders..missing', 'orders.missing\n', `a.${'b'.repeat(127)}`]) {
+    assert.ok(!isMessageKey(key), JSON.stringify(key));
+    const error = throwsCode(() => validateMessageKey(key), ErrorCode.InvalidArgument);
+    assert.equal(error.message, `The message key '${key}' must match <domain>.<segment>[.<segment>].`);
+  }
+  // 创建错误时用的是同一个校验
+  assert.equal(
+    throwsCode(() => ErrorInfo.create('ORDERS_NOTFOUND_001', 'Bad'), ErrorCode.InvalidArgument).message,
+    "The message key 'Bad' must match <domain>.<segment>[.<segment>].",
+  );
+  assert.equal(validateOperationId('order-lines.list'), 'order-lines.list');
+  for (const id of ['orders.create', 'order-lines.list', 'a1.b2', 'a-1.b-2']) {
+    assert.ok(isOperationId(id), id);
+  }
+  for (const id of [
+    '',
+    'orders',
+    'Orders.create',
+    'orders.create.now',
+    'orders-.create',
+    '-orders.create',
+    'orders.create\n',
+  ]) {
+    assert.ok(!isOperationId(id), JSON.stringify(id));
+    const error = throwsCode(() => validateOperationId(id), ErrorCode.InvalidArgument);
+    assert.equal(error.message, `The operation ID '${id}' must match <resource>.<verb>.`);
+  }
+  throwsCode(() => validateOperationId(undefined as unknown as string), ErrorCode.InvalidArgument);
+  throwsCode(() => validateMessageKey(42 as unknown as string), ErrorCode.InvalidArgument);
+});
+
+test('对象成员与参数按名字的 UTF-16 码元序排列，不按码点序', () => {
+  // U+FF5E 是一个码元 0xFF5E；U+1F600 是代理对 0xD83D 0xDE00，按码元排在前面，按码点则排在后面
+  const tilde = String.fromCharCode(0xff5e);
+  const face = String.fromCodePoint(0x1f600);
+  const error = ErrorInfo.create('ORDERS_VALIDATION_001', 'orders.unknown', { [tilde]: 1, [face]: 2, a: 3, B: 4 });
+  assert.deepEqual(Object.keys(error.details ?? {}), ['B', 'a', face, tilde]);
+  assert.equal(
+    describe('orders.unknown', { [tilde]: 1, [face]: 2, a: 3, B: 4 }),
+    `orders.unknown (B=4, a=3, ${face}=2, ${tilde}=1)`,
+  );
+  assert.equal(formatMessage('{v}', { v: { [tilde]: 1, [face]: 2, a: 3 } }), `{"a":3,"${face}":2,"${tilde}":1}`);
+});
+
+test('内置模板的登记：ErrorInfo.message 与 FrameworkError.fromMessage 用登记的 en-US 模板，冲突、坏键与超限是编程错误', () => {
+  const key = 'probes.registry.sample';
+  const before = ErrorInfo.create('PROBES_NOTFOUND_001', key, { id: 7 });
+  assert.equal(before.message, `${key} (id=7)`, 'an unregistered key falls back to the description');
+  registerBuiltInTemplates({ [key]: 'Probe {id} is missing.' });
+  // 文案在读取时解析：登记之前建的错误也渲染
+  assert.equal(before.message, 'Probe 7 is missing.');
+  assert.equal(FrameworkError.fromMessage('PROBES_NOTFOUND_001', key, { id: 8 }).message, 'Probe 8 is missing.');
+  // 占位符缺值时退回描述；进程默认目录仍然优先
+  assert.equal(ErrorInfo.create('PROBES_NOTFOUND_001', key).message, key);
+  // 同样的模板再登记一次什么也不做，不同的文案不能悄悄换掉先登记的
+  registerBuiltInTemplates({ [key]: 'Probe {id} is missing.' });
+  throwsCode(() => registerBuiltInTemplates({ [key]: 'Another text.' }), ErrorCode.InvalidArgument);
+  throwsCode(() => registerBuiltInTemplates({ 'kernel.invocation.cancelled': 'Changed.' }), ErrorCode.InvalidArgument);
+  assert.equal(before.message, 'Probe 7 is missing.');
+  // 整组先核对再写入：有一项不合就什么也不登记
+  throwsCode(
+    () => registerBuiltInTemplates({ 'probes.registry.valid': 'Fine.', 'Bad Key': 'x' }),
+    ErrorCode.InvalidArgument,
+  );
+  assert.equal(ErrorInfo.create('PROBES_NOTFOUND_001', 'probes.registry.valid').message, 'probes.registry.valid');
+  throwsCode(
+    () => registerBuiltInTemplates({ 'probes.registry.typed': 1 as unknown as string }),
+    ErrorCode.InvalidArgument,
+  );
+  // 登记表有上限：超出的一组整组拒绝
+  const flood = Object.fromEntries(
+    Array.from({ length: maxBuiltInTemplates + 1 }, (_, index) => [`probes.flood.k${index}`, 'x']),
+  );
+  throwsCode(() => registerBuiltInTemplates(flood), ErrorCode.InvalidArgument);
+  assert.equal(ErrorInfo.create('PROBES_NOTFOUND_001', 'probes.flood.k0').message, 'probes.flood.k0');
+  // 公开的自带目录仍只有原语层与内核的键
+  assert.equal(builtInMessages.find('en-US', key), undefined);
+  assert.equal(builtInTemplates[key], undefined);
 });

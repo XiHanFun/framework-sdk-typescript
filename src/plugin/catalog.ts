@@ -2,7 +2,6 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import {
-  ErrorCode,
   FrameworkError,
   isLocaleName,
   isMessageKey,
@@ -42,12 +41,14 @@ export function loadCatalog(name: string, directory: string): PluginCatalog {
     const locale = entry.name.slice(0, -'.json'.length);
     const parsed = parseJson(readFileSync(join(directory, entry.name)));
     if (!isLocaleName(locale) || !isPlainObject(parsed)) {
-      throw invalid(`The catalog file '${entry.name}' must be named after a locale and hold a JSON object.`);
+      throw FrameworkError.invalidArgument(
+        `The catalog file '${entry.name}' must be named after a locale and hold a JSON object.`,
+      );
     }
     const templates: Record<string, string> = {};
     for (const [key, template] of Object.entries(parsed)) {
       if (!isMessageKey(key) || typeof template !== 'string') {
-        throw invalid(`The catalog file '${entry.name}' has an invalid entry '${key}'.`);
+        throw FrameworkError.invalidArgument(`The catalog file '${entry.name}' has an invalid entry '${key}'.`);
       }
       templates[key] = template;
     }
@@ -65,15 +66,11 @@ export function loadCatalog(name: string, directory: string): PluginCatalog {
  */
 export function checkCatalog(catalog: PluginCatalog): void {
   if (typeof catalog.name !== 'string' || catalog.name === '') {
-    throw invalid('A message catalog needs a name.');
+    throw FrameworkError.invalidArgument('A message catalog needs a name.');
   }
   // 构造一遍内存目录：区域名、消息键、模板与大小写重复的区域按它的规则核对
   new MessageCatalog(catalog.locales);
   if (!Object.keys(catalog.locales).some((locale) => locale.toLowerCase() === 'en-us')) {
-    throw invalid(`The message catalog '${catalog.name}' has no en-US templates.`);
+    throw FrameworkError.invalidArgument(`The message catalog '${catalog.name}' has no en-US templates.`);
   }
-}
-
-function invalid(message: string): FrameworkError {
-  return new FrameworkError(ErrorCode.InvalidArgument, message);
 }

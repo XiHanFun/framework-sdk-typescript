@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { PassThrough } from 'node:stream';
@@ -50,6 +51,7 @@ import {
   ErrorInfo,
   Float64,
   FrameworkError,
+  formatMessage,
   JsonNumber,
   type JsonObject,
   type JsonValue,
@@ -86,6 +88,11 @@ function vector<T>(name: string): T {
   const url = new URL(`../spec/conformance/vectors/plugin/${name}`, import.meta.url);
   return parseJson(readFileSync(url)) as unknown as T;
 }
+
+/** 包清单里的版本：握手上报的 SDK 版本以它为准 */
+const packageVersion = (
+  JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version: string }
+).version;
 
 /** 测试插件的会话令牌 */
 const token = 'test-session-token-0123456789abcdefghijklmnopqrstuvwxyz';
@@ -815,7 +822,12 @@ test('握手交出清单的 primitives、去掉 BOM 的清单原文、一元操�
     assert.equal(response.primitives, 1);
     // 清单原文原样交出，去掉开头的 BOM，宿主据此与目录里的文件逐字段比较
     assert.equal(response.manifest, manifest);
-    assert.deepEqual(response.sdk, { name: 'framework-sdk-typescript', version: '0.2.0-rc.1', language: 'typescript' });
+    // 上报的版本就是包的版本：真源是 package.json，测试里不写死版本号
+    assert.deepEqual(response.sdk, {
+      name: 'framework-sdk-typescript',
+      version: packageVersion,
+      language: 'typescript',
+    });
     assert.deepEqual(
       response.operations.map((operation) => operation.id),
       ['probes.context', 'probes.fail', 'probes.publish', 'probes.relay', 'probes.slow', 'probes.wait'],
@@ -2361,4 +2373,182 @@ test('插件运行时的消息目录：10 种区域，键与占位符与 en-US �
   assert.equal(catalog.name, 'echots');
   assert.ok(Object.hasOwn(catalog.locales, 'en-US'));
   assert.equal(writeJson(Object.keys(catalog.locales).sort()), '["en-US","zh-CN"]');
+});
+
+// ── 清单的读取、内置模板与启动时的核对 ─────────────────────────────────────────
+
+/** 以给定的选项启动、预期被拒绝：不监听、不写握手行，返回抛出的错误与日志 */
+async function refused(
+  options: Partial<PluginOptions>,
+  env: Record<string, string> = {},
+  manifestFromFile = false,
+): Promise<{ error: unknown; logs: string[] }> {
+  const logs: string[] = [];
+  const stdin = new PassThrough();
+  let started = false;
+  let error: unknown;
+  try {
+    await servePlugin({
+      // 省略 manifest 时运行时读工作目录里的清单文件
+      ...(manifestFromFile ? {} : { manifest }),
+      network: 'tcp',
+      stdin,
+      stdout: {
+        // 没有被拒绝、写出了握手行：关掉 stdin 让插件收尾，测试以断言失败结束而不是挂住
+        write: () => {
+          started = true;
+          stdin.end();
+          return true;
+        },
+      },
+      logger: new PluginLogger({ write: (text: string) => logs.push(text) }),
+      env: { XIHAN_PLUGIN_SESSION: token, ...env },
+      exit: () => {},
+      ...options,
+    });
+  } catch (caught) {
+    error = caught;
+  }
+  assert.ok(!started, 'a refused start must not write the handshake line');
+  assert.ok(error !== undefined, 'the start must be refused');
+  return { error, logs };
+}
+
+test('清单按严格的 UTF-8 读，握手交出的原文与读出的清单出自同一段字节：坏字节拒绝启动，BOM 按字节跳过，文件不存在报路径（handshake.md §3 第 3 条）', async (t) => {
+  const bytes = Buffer.from(manifest);
+  // entry 的值里放一个坏字节：宽松的解码会把它换成 U+FFFD、照常握手，交给宿主的原文就与文件的字节不一致了
+  const corrupted = Buffer.from(bytes);
+  corrupted[bytes.lastIndexOf('probe')] = 0xff;
+  const { error } = await refused({ manifest: corrupted });
+  assert.ok(error instanceof FrameworkError, String(error));
+  assert.equal(error.code, 'KERNEL_CAPABILITY_006');
+  assert.equal(error.messageKey, 'kernel.manifest.invalid_json');
+  assert.deepEqual(error.details, { reason: '$' });
+
+  // 字节形式的清单开头的 BOM 按字节跳过，握手交出的原文不带它
+  const plugin = await launch({ manifest: Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), bytes]) });
+  try {
+    assert.equal((await handshake(plugin.client)).manifest, manifest);
+  } finally {
+    await plugin.close();
+  }
+
+  // 省略 manifest 时读工作目录里的清单文件，与 readManifestSource 同一条路径：没有文件是清单读取的错误，不是文件系统的异常
+  const directory = mkdtempSync(join(tmpdir(), 'xihan-plugin-manifest-'));
+  const previous = process.cwd();
+  t.after(() => {
+    process.chdir(previous);
+    rmSync(directory, { recursive: true, force: true });
+  });
+  process.chdir(directory);
+  const missing = (await refused({}, {}, true)).error;
+  assert.ok(missing instanceof FrameworkError, String(missing));
+  assert.equal(missing.code, 'KERNEL_CAPABILITY_006');
+  assert.equal(missing.messageKey, 'kernel.manifest.file_missing');
+  writeFileSync(join(directory, 'xihan.manifest.json'), corrupted);
+  const invalid = (await refused({}, {}, true)).error;
+  assert.ok(
+    invalid instanceof FrameworkError && invalid.messageKey === 'kernel.manifest.invalid_json',
+    String(invalid),
+  );
+});
+
+test('只导入 xihan-framework/plugin 就登记了运行时的 en-US 模板：plugins.* 的 error.message 是模板填入参数，不是「键 (参数)」', () => {
+  const vectors = vector<{ messages: { code: string; key: string; arguments: string[]; template: string }[] }>(
+    'plugin-messages.json',
+  );
+  // 另起一个进程：除了公开入口什么都不加载，登记只能来自导入 xihan-framework/plugin 的副作用
+  const script = `
+    import { PluginMessageKey } from 'xihan-framework/plugin';
+    import { ErrorInfo } from 'xihan-framework/primitives';
+    const messages = JSON.parse(process.argv[1]);
+    const rendered = messages.map((entry) =>
+      ErrorInfo.create(entry.code, entry.key, Object.fromEntries(entry.arguments.map((name) => [name, '<' + name + '>']))).message,
+    );
+    process.stdout.write(JSON.stringify({ keys: Object.values(PluginMessageKey).length, rendered }));
+  `;
+  const child = spawnSync(
+    process.execPath,
+    ['--conditions=xihan-source', '--input-type=module', '-e', script, JSON.stringify(vectors.messages)],
+    { cwd: fileURLToPath(new URL('..', import.meta.url)), encoding: 'utf8' },
+  );
+  assert.equal(child.status, 0, child.stderr);
+  const output = JSON.parse(child.stdout) as { keys: number; rendered: string[] };
+  assert.equal(output.keys, vectors.messages.length);
+  for (const [index, entry] of vectors.messages.entries()) {
+    const args = Object.fromEntries(entry.arguments.map((name) => [name, `<${name}>`]));
+    assert.equal(output.rendered[index], formatMessage(entry.template, args), entry.key);
+  }
+  // 本进程也导入了插件入口：回调失败的错误读 message 就是文案
+  assert.equal(
+    hostUnavailable('xihan.tests.probe', 'no supported callback endpoint').message,
+    "Plugin 'xihan.tests.probe' cannot reach the host: no supported callback endpoint",
+  );
+});
+
+test('宿主的协议版本列表只作诊断：逐项是不带符号的十进制数，空项、小数与十六进制都记一条 warning；项两端的空白按 RFC-0001 的空白字符', async () => {
+  const warning = 'the host did not pass a valid protocol version list';
+  const space = String.fromCharCode(0x85);
+  const cases: [string, number][] = [
+    ['1', 0],
+    ['1,2', 0],
+    ['1, 2', 0],
+    [`${space}1${space},2`, 0],
+    // 空项以前被读成 0，整个列表当成合法的
+    ['1,,2', 1],
+    ['1,', 1],
+    [',1', 1],
+    ['', 1],
+    [' ', 1],
+    ['1,x', 1],
+    ['+1', 1],
+    ['-1', 1],
+    ['1.0', 1],
+    ['1e0', 1],
+    ['0x1', 1],
+    ['1 2', 1],
+    ['4294967296', 1],
+    // U+FEFF 不是规范的空白，trim 却会去掉它
+    [`${String.fromCharCode(0xfeff)}1`, 1],
+  ];
+  for (const [versions, expected] of cases) {
+    // 监听地址不合法：环境变量读完之后才拒绝启动，不必真的监听
+    const { logs } = await refused({ address: '[::1]:0' }, { XIHAN_PLUGIN_PROTOCOL_VERSIONS: versions });
+    assert.equal(logged(logs, 'warning', warning), expected, JSON.stringify(versions));
+  }
+  // 列表合法但没有本 SDK 支持的版本是另一条 warning
+  const { logs } = await refused({ address: '[::1]:0' }, { XIHAN_PLUGIN_PROTOCOL_VERSIONS: '2,3' });
+  assert.equal(logged(logs, 'warning', warning), 0);
+  assert.equal(logged(logs, 'warning', 'the host supports no protocol version of this SDK'), 1);
+});
+
+test('未声明的健康项同一个名字只警告一次，记过的名字有上限：超出之后不再警告，集合不随回调报的名字增长（lifecycle.md §7.4）', async () => {
+  let round = 0;
+  const plugin = await launch({
+    hooks: {
+      health: () => {
+        round += 1;
+        // 每一轮都报一批没见过的名字，外加一个每轮都有的
+        const items = Array.from({ length: 200 }, (_, index) => ({
+          name: `undeclared-${round}-${index}`,
+          status: HealthStatus.Healthy,
+        }));
+        return { state: LifecycleState.Ready, items: [{ name: 'again', status: HealthStatus.Healthy }, ...items] };
+      },
+    },
+  });
+  try {
+    await startPlugin(plugin.client);
+    const warned = () => logged(plugin.logs, 'warning', 'health item is not declared in contributes.health');
+    assert.equal(warned(), 201, 'the first evaluation warns once per name');
+    const reported = await health(plugin.client);
+    assert.deepEqual(reported.items, [], 'undeclared items are never reported');
+    assert.equal(warned(), 256, 'names are remembered up to the limit');
+    await health(plugin.client);
+    await health(plugin.client);
+    assert.equal(warned(), 256, 'no more warnings and no more names once the limit is reached');
+    assert.equal(plugin.logs.filter((line) => line.includes('"item":"again"')).length, 1);
+  } finally {
+    await plugin.close();
+  }
 });

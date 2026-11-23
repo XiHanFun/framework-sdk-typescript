@@ -1,7 +1,7 @@
 import { ErrorCode } from './error-code.ts';
 import type { ErrorInfo } from './error-info.ts';
 import { FrameworkError } from './framework.ts';
-import { Float64, type JsonValue } from './json.ts';
+import { hasToJSON, type JsonValue } from './json.ts';
 import { Result } from './result.ts';
 
 /**
@@ -72,22 +72,19 @@ export abstract class MaybeBase<T> {
 
   /**
    * 线上编码：有值为值本身，无值为 `null`
+   *
+   * @remarks
+   * 值有自己的 `toJSON` 时替它调用；`Float64` 与 `JsonNumber` 例外，原样交出，由 `writeJson` 按浮点、按原文写。
+   * 线上编码用 `writeJson`：`JSON.stringify` 拿到原样交出的这两种值时写不成数字
    */
   toJSON(): unknown {
     if (!this.hasValue) {
       return null;
     }
     const value: unknown = (this as unknown as Some<T>).value;
-    // JSON.stringify 不会再调用 toJSON 返回值自己的 toJSON，所以这里替它调用；Float64 原样交出，让 writeJson 仍按浮点写
-    if (
-      typeof value === 'object' &&
-      value !== null &&
-      !(value instanceof Float64) &&
-      typeof (value as { toJSON?: unknown }).toJSON === 'function'
-    ) {
-      return (value as { toJSON(): unknown }).toJSON();
-    }
-    return value;
+    // JSON.stringify 不会再调用 toJSON 返回值自己的 toJSON，所以这里替它调用；Float64 与 JsonNumber 原样交出，
+    // 让 writeJson 仍按浮点、按原文写：判定与 writeJson 共用 hasToJSON，两处不会再各写各的
+    return hasToJSON(value) ? value.toJSON() : value;
   }
 }
 

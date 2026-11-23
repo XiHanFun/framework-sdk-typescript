@@ -13,6 +13,7 @@ import {
 } from './json.ts';
 import { JsonPath } from './json-path.ts';
 import { floatText } from './json-writer.ts';
+import { jsonNumberGrammar } from './number-grammar.ts';
 
 /**
  * JSON 文本的嵌套上限：最外层的对象或数组是第 1 层（RFC-0001「JSON 文本」）
@@ -45,8 +46,8 @@ const syntaxProblem: JsonTextProblem = Object.freeze({ kind: 'syntax', path: Jso
 /** 读取器内部的语法错误：不是 Error，不收集调用栈 */
 const invalid: unique symbol = Symbol('invalid JSON text');
 
-/** 数字的文法（RFC 8259）：整数部分不带前导零，小数点与指数后至少一位 */
-const numberPattern = /-?(?:0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?/y;
+/** 数字的文法（RFC 8259，写在 number-grammar.ts）：粘连匹配，从读取位置起扫描；捕获组是小数部分与指数 */
+const numberPattern = new RegExp(jsonNumberGrammar, 'y');
 
 const hexPattern = /^[0-9A-Fa-f]{4}$/;
 

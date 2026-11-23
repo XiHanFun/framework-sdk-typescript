@@ -1,6 +1,5 @@
 import {
   BaggageKey,
-  ErrorCode,
   ErrorInfo,
   FrameworkError,
   isBaggageKeyRegistered,
@@ -138,14 +137,16 @@ export class InvocationContext {
    */
   static create(options: InvocationContextOptions = {}): InvocationContext {
     if (options.deadline !== undefined && options.timeout !== undefined) {
-      throw invalid("Set either 'deadline' or 'timeout' of an invocation context, not both.");
+      throw FrameworkError.invalidArgument("Set either 'deadline' or 'timeout' of an invocation context, not both.");
     }
     if (options.trace !== undefined && options.traceParent !== undefined) {
-      throw invalid("Set either 'trace' or 'traceParent' of an invocation context, not both.");
+      throw FrameworkError.invalidArgument("Set either 'trace' or 'traceParent' of an invocation context, not both.");
     }
     const deadline = options.timeout === undefined ? options.deadline : Date.now() + options.timeout;
     if (deadline !== undefined && !Number.isFinite(deadline)) {
-      throw invalid('The deadline of an invocation context must be a finite number of milliseconds.');
+      throw FrameworkError.invalidArgument(
+        'The deadline of an invocation context must be a finite number of milliseconds.',
+      );
     }
     const trace = resolveTrace(options);
     const delay = deadline === undefined ? undefined : deadline - Date.now();
@@ -251,7 +252,7 @@ export class InvocationContext {
     checkBaggageMember(key, value);
     if (isBaggageKeyRegistered(key) && key !== BaggageKey.IdempotencyKey && !isBaggageValueAcceptable(value)) {
       // 值可能含控制字符，不写进消息
-      throw invalid(
+      throw FrameworkError.invalidArgument(
         `The baggage value of '${key}' must not be empty, longer than 256 UTF-16 code units or contain control characters.`,
       );
     }
@@ -388,10 +389,14 @@ function resolveTrace(options: InvocationContextOptions): Pick<State, 'traceId' 
   if (options.trace !== undefined) {
     const { traceId, spanId, sampled = true } = options.trace;
     if (!isTraceId(traceId)) {
-      throw invalid(`The trace ID '${traceId}' must be 32 lowercase hexadecimal digits that are not all zero.`);
+      throw FrameworkError.invalidArgument(
+        `The trace ID '${traceId}' must be 32 lowercase hexadecimal digits that are not all zero.`,
+      );
     }
     if (!isSpanId(spanId)) {
-      throw invalid(`The span ID '${spanId}' must be 16 lowercase hexadecimal digits that are not all zero.`);
+      throw FrameworkError.invalidArgument(
+        `The span ID '${spanId}' must be 16 lowercase hexadecimal digits that are not all zero.`,
+      );
     }
     return { traceId, spanId, sampled };
   }
@@ -424,13 +429,9 @@ function copyBaggage(baggage: Readonly<Record<string, string>>): Readonly<Record
 /** 键不合 `xihan.<name>`、值不是字符串在任何入口都是编程错误 */
 function checkBaggageMember(key: string, value: unknown): void {
   if (!isBaggageKeyWellFormed(key)) {
-    throw invalid(`The baggage key '${key}' must match xihan.<name>.`);
+    throw FrameworkError.invalidArgument(`The baggage key '${key}' must match xihan.<name>.`);
   }
   if (typeof value !== 'string') {
-    throw invalid(`The baggage value of '${key}' must be a string.`);
+    throw FrameworkError.invalidArgument(`The baggage value of '${key}' must be a string.`);
   }
-}
-
-function invalid(message: string): FrameworkError {
-  return new FrameworkError(ErrorCode.InvalidArgument, message);
 }

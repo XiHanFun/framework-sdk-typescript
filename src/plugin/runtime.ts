@@ -1,4 +1,3 @@
-import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import {
@@ -20,11 +19,12 @@ import {
   PluginIsolation,
   readManifest,
 } from '../manifest/index.ts';
+import { type ManifestSource, readManifestBytes, readManifestSource } from '../manifest/node.ts';
 import { OperationErrorCode, OperationInvoker, OperationRegistry } from '../operation/index.ts';
+import { isAbort } from '../operation/invoker.ts';
 import type { PipelineBuilder } from '../pipeline/index.ts';
 import {
   canTransition,
-  ErrorCode,
   ErrorInfo,
   FrameworkError,
   FrameworkInfo,
@@ -63,6 +63,7 @@ import {
   negotiateProtocolVersion,
   PluginEnvironment,
   PluginProtocol,
+  parseProtocolVersions,
   SubscriptionMode,
   selectHostEndpoint,
 } from './protocol.ts';
@@ -283,6 +284,9 @@ const exitDelay = 1000;
 /** gRPC 服务端优雅关闭等在途 RPC 的上限，之后强制关闭 */
 const serverShutdownLimit = 1000;
 
+/** 记过警告的未声明健康项名的上限：超出之后不再警告，集合不随健康回调报的名字无界增长（与 Go SDK 相同） */
+const maxWarnedHealthItems = 256;
+
 /** 健康项状态的协议数值 */
 const healthStatusValues: Readonly<Record<HealthStatus, pb.HealthStatus>> = {
   Healthy: pb.HealthStatus.HEALTH_STATUS_HEALTHY,
@@ -346,6 +350,16 @@ class Lifecycle {
   }
 }
 
+/** 监听之前备好的状态：清单与它的原文、调用器、宿主回调客户端与 gRPC 服务端 */
+interface Prepared {
+  readonly manifest: Manifest;
+  /** 握手时原样交给宿主的清单原文：与 `manifest` 出自同一次读取 */
+  readonly manifestText: string;
+  readonly invoker: OperationInvoker;
+  readonly host: Host;
+  readonly server: Server;
+}
+
 /** 一个健康推送流：状态变化时推一条，收尾时结束 */
 interface HealthWatcher {
   readonly push: () => void;
@@ -361,16 +375,16 @@ class PluginRuntime {
   readonly #lifecycle = new Lifecycle();
   readonly #tenants = new TenantLedger();
   readonly #watchers = new Set<HealthWatcher>();
+  /** 已经警告过的未声明健康项名，至多 {@link maxWarnedHealthItems} 个 */
   readonly #warnedItems = new Set<string>();
   /** 在途调用与投递的取消：停止时宽限到了、收尾时立即触发（lifecycle.md §7.5、§7.7） */
   readonly #inflight = new Set<AbortController>();
   readonly #idle: (() => void)[] = [];
-  #manifestText = '';
-  #manifest: Manifest | undefined;
-  #invoker: OperationInvoker | undefined;
-  #server: Server | undefined;
+  /** 清单 ID：读出清单之前为空串，只用在日志里 */
+  #id = '';
+  /** 监听之前备好的状态；备好之前为 `undefined` */
+  #prepared: Prepared | undefined;
   #bound: BoundEndpoint | undefined;
-  #host: Host | undefined;
   /** `Configure` 授予的权限 */
   #granted: ReadonlySet<string> = new Set();
   /** 最近一次健康回调的结果：可服务期间的推送带它的健康项 */
@@ -395,20 +409,30 @@ class PluginRuntime {
     this.#exit = options.exit ?? ((code) => process.exit(code));
   }
 
-  get #id(): string {
-    return this.#manifest?.id ?? '';
+  /**
+   * 备好的状态：服务实现只在监听之后执行，那时它一定已经有了
+   *
+   * @remarks
+   * 读不到是运行时自己的次序缺陷：抛出，不带着空值往下走
+   */
+  get #ready(): Prepared {
+    const prepared = this.#prepared;
+    if (prepared === undefined) {
+      throw FrameworkError.invalidArgument('The plugin runtime serves nothing before it is prepared.');
+    }
+    return prepared;
   }
 
   async run(): Promise<void> {
-    let bound: BoundEndpoint;
+    let listening: { readonly bound: BoundEndpoint; readonly line: string };
     try {
-      bound = await this.#prepare();
+      listening = await this.#prepare();
     } catch (error) {
       // 拒绝启动：不监听、不写握手行，在 stderr 记一条 error 日志，宿主看到的是进程在握手之前退出（handshake.md §1、§5）
       this.#logger.error('the plugin cannot start', { plugin: this.#id, error });
       throw error;
     }
-    const line = formatHandshakeLine(bound.endpoint) as string;
+    const { bound, line } = listening;
     const done = new Promise<void>((resolve) => {
       this.#finish = resolve;
     });
@@ -423,66 +447,83 @@ class PluginRuntime {
     await done;
   }
 
-  /** 读清单、核对声明与环境变量、监听端点；任何一步不合即抛出，不写握手行 */
-  async #prepare(): Promise<BoundEndpoint> {
-    const manifest = this.#readManifest();
-    this.#manifest = manifest;
+  /** 读清单、核对声明与环境变量、监听端点，返回绑定的端点与握手行；任何一步不合即抛出，不写握手行 */
+  async #prepare(): Promise<{ readonly bound: BoundEndpoint; readonly line: string }> {
+    const source = await this.#readManifest();
+    const { manifest } = source;
+    this.#id = manifest.id;
     const registry = this.#options.registry ?? new OperationRegistry();
     this.#checkDeclarations(manifest, registry);
     const session = this.#env[PluginEnvironment.Session] ?? '';
     if (session === '') {
-      throw invalid(`The environment variable '${PluginEnvironment.Session}' is required.`);
+      throw FrameworkError.invalidArgument(`The environment variable '${PluginEnvironment.Session}' is required.`);
     }
-    this.#invoker = new OperationInvoker(registry, this.#options.pipeline);
-    this.#readEnvironment(manifest, session);
+    const invoker = new OperationInvoker(registry, this.#options.pipeline);
+    const host = this.#readEnvironment(manifest, session);
 
     const server = new Server({ interceptors: [sessionInterceptor(session)] });
     server.addService(pb.PluginService, this.#service() as unknown as pb.PluginServer);
-    this.#server = server;
+    // 绑定之前就备好：端点一绑定就可能有 RPC 进来
+    this.#prepared = { manifest, manifestText: source.text, invoker, host, server };
     const bound = await bindEndpoint(server, this.#options.network ?? defaultNetwork(), this.#options.address);
-    if (formatHandshakeLine(bound.endpoint) === undefined) {
+    const line = formatHandshakeLine(bound.endpoint);
+    if (line === undefined) {
       server.forceShutdown();
       bound.cleanup();
-      throw invalid(`The endpoint '${bound.endpoint.address}' cannot be written as a handshake line.`);
+      throw FrameworkError.invalidArgument(
+        `The endpoint '${bound.endpoint.address}' cannot be written as a handshake line.`,
+      );
     }
     this.#bound = bound;
-    return bound;
+    return { bound, line };
+  }
+
+  /**
+   * 清单的原文与读出的清单，两者出自同一次读取
+   *
+   * @remarks
+   * 文件开头的 BOM 不是清单的一部分：宿主读文件时同样跳过它，握手交出的原文不带它（handshake.md §3 第 3 条）。
+   * 省略清单时读插件目录（当前工作目录）里的文件，给的是字节时走同一个读取：按字节跳过 BOM、按严格的 UTF-8 解码，
+   * 坏字节不换成 U+FFFD——换了之后握手交出的原文就与文件的字节不一致。给的是字符串时去掉开头的 U+FEFF
+   */
+  async #readSource(): Promise<Result<ManifestSource>> {
+    const given = this.#options.manifest;
+    if (given === undefined) {
+      return readManifestSource(join(process.cwd(), ManifestFileName));
+    }
+    if (typeof given !== 'string') {
+      return readManifestBytes(given);
+    }
+    const text = given.charCodeAt(0) === 0xfeff ? given.slice(1) : given;
+    const read = readManifest(text);
+    return read.ok ? Result.ok({ text, manifest: read.value }) : Result.fail(read.error);
   }
 
   /** 读清单并核对它描述的是进程外插件 */
-  #readManifest(): Manifest {
-    const raw = this.#options.manifest ?? readFileSync(join(process.cwd(), ManifestFileName));
-    let text = typeof raw === 'string' ? raw : new TextDecoder('utf-8').decode(raw);
-    // 文件开头的 BOM 不是清单的一部分：宿主读文件时同样跳过它，握手交出的原文不带它（handshake.md §3 第 3 条）
-    if (text.charCodeAt(0) === 0xfeff) {
-      text = text.slice(1);
-    }
-    const read = readManifest(text);
+  async #readManifest(): Promise<ManifestSource> {
+    const read = await this.#readSource();
     if (!read.ok) {
-      const { error } = read;
-      throw new FrameworkError(error.code, error.message, {
-        ...(error.messageKey === undefined ? {} : { messageKey: error.messageKey }),
-        ...(error.details === undefined ? {} : { details: error.details }),
-      });
+      throw FrameworkError.fromErrorInfo(read.error);
     }
-    const manifest = read.value;
+    const { manifest } = read.value;
     if (manifest.kind !== ManifestKind.Plugin || manifest.isolation !== PluginIsolation.OutOfProcess) {
-      throw invalid(`The manifest '${manifest.id}' must describe a plugin with isolation 'out-of-process'.`);
+      throw FrameworkError.invalidArgument(
+        `The manifest '${manifest.id}' must describe a plugin with isolation 'out-of-process'.`,
+      );
     }
     // 只有 Wasm 插件能贡献中间件：宿主在发现时拒绝写了 contributes.pipeline 的进程外插件（RFC-0017「范围」），这里在监听前就拒绝
     if ((manifest.contributes?.pipeline?.length ?? 0) > 0) {
-      throw invalid(
+      throw FrameworkError.invalidArgument(
         `The plugin '${manifest.id}' must not declare 'contributes.pipeline': only wasm plugins can contribute middleware.`,
       );
     }
     // 握手写清单的 primitives，宿主要求它等于自己的原语层大版本；本 SDK 只实现一个大版本（handshake.md §1、§3 第 2 条）
     if (String(manifest.primitives) !== FrameworkInfo.specVersion) {
-      throw invalid(
+      throw FrameworkError.invalidArgument(
         `The plugin '${manifest.id}' declares primitives '${manifest.primitives}', but this SDK implements primitives '${FrameworkInfo.specVersion}'.`,
       );
     }
-    this.#manifestText = text;
-    return manifest;
+    return read.value;
   }
 
   /** 握手只能细化清单里声明过的东西（handshake.md §1）：不合的声明在监听前拒绝，不等宿主在握手时拒绝 */
@@ -491,7 +532,7 @@ class PluginRuntime {
     // 登记表本身不收重复的操作 ID，这里只核对都在清单里
     for (const descriptor of registry.list()) {
       if (!declared.includes(descriptor.contract.id)) {
-        throw invalid(
+        throw FrameworkError.invalidArgument(
           `The operation '${descriptor.contract.id}' is not declared in 'contributes.operations' of '${manifest.id}'.`,
         );
       }
@@ -500,19 +541,19 @@ class PluginRuntime {
     for (const subscription of this.#options.subscriptions ?? []) {
       const mode = subscription.mode ?? '';
       if (typeof subscription.handler !== 'function' || !isTopic(subscription.topic)) {
-        throw invalid(
+        throw FrameworkError.invalidArgument(
           `The subscription '${subscription.topic}' of '${manifest.id}' needs a valid topic and a handler.`,
         );
       }
       if (!isSubscriptionMode(mode)) {
-        throw invalid(
+        throw FrameworkError.invalidArgument(
           `The subscription '${subscription.topic}' of '${manifest.id}' has the mode '${mode}'; the mode must be empty, 'competing' or 'broadcast'.`,
         );
       }
       // 按（主题，类型）对去重而不看方式：同一对不能以两种方式各声明一次（handshake.md §3 第 5 条）
       const pair = writeJson([subscription.topic, subscription.messageType ?? '']);
       if (pairs.has(pair)) {
-        throw invalid(
+        throw FrameworkError.invalidArgument(
           `The subscription '${subscription.topic}' with the message type '${subscription.messageType ?? ''}' is declared more than once by '${manifest.id}'.`,
         );
       }
@@ -523,12 +564,13 @@ class PluginRuntime {
     }
   }
 
-  /** 读 handshake.md §1 的其余环境变量：宿主回调端点，以及只用于诊断的版本 */
-  #readEnvironment(manifest: Manifest, session: string): void {
+  /** 读 handshake.md §1 的其余环境变量：只用于诊断的版本，以及宿主回调端点；返回连它的回调客户端 */
+  #readEnvironment(manifest: Manifest, session: string): Host {
     const logger = this.#logger.with({ plugin: manifest.id });
     const versions = this.#env[PluginEnvironment.ProtocolVersions] ?? '';
-    const listed = versions.split(',').map((part) => Number(part.trim()));
-    if (versions === '' || listed.some((version) => !Number.isSafeInteger(version) || version < 0)) {
+    // 逐项严格读：空项（1,,2）不能当成 0，空白按 RFC-0001 的空白字符而不是 trim 的
+    const listed = parseProtocolVersions(versions);
+    if (listed === undefined) {
       logger.warning('the host did not pass a valid protocol version list', { versions });
     } else if (negotiateProtocolVersion(listed) === undefined) {
       logger.warning('the host supports no protocol version of this SDK; the handshake will be refused', { versions });
@@ -551,7 +593,7 @@ class PluginRuntime {
     const permissions = manifest.permissions ?? [];
     // 回调所需的权限既要在清单里声明、也要被宿主授予（invocation.md §5）
     const permitted = (permission: string) => permissions.includes(permission) && this.#granted.has(permission);
-    this.#host = new Host(endpoint, session, manifest.id, this.#tenants, permitted);
+    return new Host(endpoint, session, manifest.id, this.#tenants, permitted);
   }
 
   /** stdin 读到结尾（或读出错）与 SIGTERM 都是收尾请求（lifecycle.md §7.7） */
@@ -658,14 +700,14 @@ class PluginRuntime {
         `No common protocol version: the host supports [${request.protocolVersions.join(', ')}], the plugin supports [${PluginProtocol.version}].`,
       );
     }
-    const manifest = this.#manifest as Manifest;
+    const { manifest, manifestText, invoker } = this.#ready;
     const response: pb.HandshakeResponse = {
       protocolVersion: selected,
       primitives: manifest.primitives,
-      manifest: this.#manifestText,
+      manifest: manifestText,
       sdk: { name: FrameworkInfo.sdkName, version: FrameworkInfo.sdkVersion, language: 'typescript' },
       // 只声明一元操作：流式操作等流式契约的 RFC（handshake.md §3 第 4 条）
-      operations: (this.#invoker as OperationInvoker).registry.list().map((descriptor) => ({
+      operations: invoker.registry.list().map((descriptor) => ({
         id: descriptor.contract.id,
         stability: descriptor.contract.stability,
         expose: [...descriptor.contract.expose],
@@ -828,21 +870,25 @@ class PluginRuntime {
     this.#shutdown ??= (async () => {
       await (this.#winding ?? Promise.resolve());
       this.#endWatchers();
-      const server = this.#server as Server;
-      await new Promise<void>((resolve) => {
-        // 优雅关闭等在途 RPC 结束；长流已经结束，仍有卡住的调用时到点强制关闭
-        const timer = setTimeout(() => {
-          server.forceShutdown();
-          resolve();
-        }, serverShutdownLimit);
-        timer.unref();
-        server.tryShutdown(() => {
-          clearTimeout(timer);
-          resolve();
+      // 没有备好就没有服务端与宿主客户端要关
+      const prepared = this.#prepared;
+      if (prepared !== undefined) {
+        const { server } = prepared;
+        await new Promise<void>((resolve) => {
+          // 优雅关闭等在途 RPC 结束；长流已经结束，仍有卡住的调用时到点强制关闭
+          const timer = setTimeout(() => {
+            server.forceShutdown();
+            resolve();
+          }, serverShutdownLimit);
+          timer.unref();
+          server.tryShutdown(() => {
+            clearTimeout(timer);
+            resolve();
+          });
         });
-      });
+      }
       this.#bound?.cleanup();
-      this.#host?.close();
+      prepared?.host.close();
       this.#detach();
       this.#lifecycle.transition(LifecycleState.Stopped);
       this.#logger.information('stopped', { plugin: this.#id });
@@ -900,13 +946,14 @@ class PluginRuntime {
         error: processFailed(this.#id, 'health', thrownTypeName(error)),
       };
     }
-    const declared = contributedHealth(this.#manifest as Manifest);
+    const declared = contributedHealth(this.#ready.manifest);
     const items = (reported.items ?? []).filter((item) => {
       if (declared.includes(item.name)) {
         return true;
       }
-      // 宿主按清单核对健康项（lifecycle.md §4），未声明的不上报；同一个名字在进程里只警告一次
-      if (!this.#warnedItems.has(item.name)) {
+      // 宿主按清单核对健康项（lifecycle.md §4），未声明的不上报；同一个名字在进程里只警告一次。
+      // 记过的名字有上限：健康回调可以每次报不同的名字，超出之后不再警告，集合不无界增长
+      if (!this.#warnedItems.has(item.name) && this.#warnedItems.size < maxWarnedHealthItems) {
         this.#warnedItems.add(item.name);
         this.#logger.warning('health item is not declared in contributes.health', {
           plugin: this.#id,
@@ -1021,7 +1068,7 @@ class PluginRuntime {
     const callDeadline =
       deadline instanceof Date ? deadline.getTime() : Number.isFinite(deadline) ? deadline : undefined;
     const context = contextFromMetadata(metadata, controller.signal, callDeadline);
-    attachHost(context, this.#host as Host);
+    attachHost(context, this.#ready.host);
     const tenant = tenantOf(context);
     this.#inflight.add(controller);
     this.#tenants.enter(tenant);
@@ -1066,7 +1113,7 @@ class PluginRuntime {
    */
   async #invoke(call: ServerUnaryCall<pb.InvokeRequest, pb.InvokeResponse>): Promise<pb.InvokeResponse> {
     const request = call.request;
-    const invoker = this.#invoker as OperationInvoker;
+    const { invoker } = this.#ready;
     if (invoker.registry.find(request.operation) === undefined) {
       throw statusError(
         grpcStatus.UNIMPLEMENTED,
@@ -1202,17 +1249,4 @@ function unhandled(error: unknown): ErrorInfo {
     undefined,
     error instanceof FrameworkError ? error.toErrorInfo() : undefined,
   );
-}
-
-/** 抛出的是不是这次调用的中止：信号的原因本身，或名为 AbortError / TimeoutError 的错误 */
-function isAbort(error: unknown, signal: AbortSignal): boolean {
-  if (error === signal.reason) {
-    return true;
-  }
-  const name = typeof error === 'object' && error !== null ? (error as { name?: unknown }).name : undefined;
-  return name === 'AbortError' || name === 'TimeoutError';
-}
-
-function invalid(message: string): FrameworkError {
-  return new FrameworkError(ErrorCode.InvalidArgument, message);
 }

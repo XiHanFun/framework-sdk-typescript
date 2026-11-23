@@ -7,10 +7,11 @@
  * @packageDocumentation
  */
 
+// 操作 ID 的文法在原语层（清单的 contributes.operations 也用它），这里照旧导出同一个函数
+export { isOperationId } from '../primitives/index.ts';
 export {
   defineContract,
   Expose,
-  isOperationId,
   type OperationContract,
   type OperationContractInit,
   OperationErrorCode,

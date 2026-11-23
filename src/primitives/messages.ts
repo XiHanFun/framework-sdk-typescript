@@ -2,6 +2,7 @@ import { ErrorCode } from './error-code.ts';
 import { FrameworkError } from './framework.ts';
 import { Float64, isIntegerNumber, isPlainObject, JsonMembers, JsonNumber, maxInt64, minInt64 } from './json.ts';
 import { floatText, quoteJsonString } from './json-writer.ts';
+import { compareOrdinal } from './ordinal.ts';
 
 /**
  * 模板参数：占位符名到值；位置参数的键是 `"0"`、`"1"`…
@@ -31,6 +32,18 @@ const fallbackLocale = 'en-US';
  */
 export function isMessageKey(key: string): boolean {
   return key.length <= maxMessageKeyLength && messageKeyPattern.test(key);
+}
+
+/**
+ * 校验消息键并原样返回
+ *
+ * @throws {@link FrameworkError} 消息键不合法时，码为 `PRIMITIVES_VALIDATION_001`
+ */
+export function validateMessageKey(key: string): string {
+  if (typeof key !== 'string' || !isMessageKey(key)) {
+    throw FrameworkError.invalidArgument(`The message key '${key}' must match <domain>.<segment>[.<segment>].`);
+  }
+  return key;
 }
 
 /**
@@ -393,8 +406,8 @@ function jsonText(model: ModelValue, depth: number): string {
       if (depth > maxTextDepth) {
         return 'null';
       }
-      // Array.prototype.sort 是稳定排序：同名成员保持原顺序；字符串的 < 按 UTF-16 码元比较
-      const members = [...model.members].sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
+      // Array.prototype.sort 是稳定排序：同名成员保持原顺序；名字按 UTF-16 码元比较
+      const members = [...model.members].sort(([left], [right]) => compareOrdinal(left, right));
       return `{${members.map(([name, member]) => `${quoteJsonString(name)}:${jsonText(modelOf(member), depth + 1)}`).join(',')}}`;
     }
   }
@@ -476,8 +489,8 @@ export function describe(key: string, args?: MessageArguments): string {
   }
   const names = Object.keys(args)
     .filter((name) => args[name] !== undefined)
-    // 缺省的 sort 按 UTF-16 码元比较，正是规范要求的序数顺序
-    .sort();
+    // 规范要求的序数顺序：按 UTF-16 码元比较
+    .sort(compareOrdinal);
   if (names.length === 0) {
     return key;
   }

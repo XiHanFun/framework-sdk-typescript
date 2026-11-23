@@ -326,8 +326,15 @@ const validationStep: Middleware = middleware(BuiltInStep.Validation, async (con
   return next(context);
 });
 
-/** 判断抛出的异常是不是这次调用的中止：信号的原因本身，或名为 AbortError / TimeoutError 的错误 */
-function isAbort(error: unknown, signal: AbortSignal): boolean {
+/**
+ * 判断抛出的异常是不是这次调用的中止：信号的原因本身，或名为 AbortError / TimeoutError 的错误
+ *
+ * @remarks
+ * 调用器的内置步骤与插件运行时的事件投递共用这一个判定
+ *
+ * @internal
+ */
+export function isAbort(error: unknown, signal: AbortSignal): boolean {
   if (error === signal.reason) {
     return true;
   }

@@ -1,4 +1,4 @@
-import { isWhitespace } from '../primitives/whitespace.ts';
+import { isWhitespace, trimWhitespace } from '../primitives/whitespace.ts';
 
 /**
  * 协议 `xihan.plugin.v1` 的常量与文法（RFC-0017，spec/plugin/handshake.md）
@@ -257,6 +257,36 @@ function decimal(text: string, limit: number): number | undefined {
     }
   }
   return value;
+}
+
+/** 协议版本的上限：plugin.proto 的 `protocol_versions` 是 uint32 */
+const maxProtocolVersion = 4_294_967_295;
+
+/** 版本列表里的一项：只有 ASCII 数字，整串匹配 */
+const protocolVersionPattern = /^[0-9]+$/;
+
+/**
+ * 解析宿主支持的协议版本列表 `XIHAN_PLUGIN_PROTOCOL_VERSIONS`（handshake.md §1）：逗号分隔的十进制数；不合法时为 `undefined`
+ *
+ * @remarks
+ * 每一项去掉两端的空白（RFC-0001「空白字符」，与 Go SDK 的 `strings.TrimSpace` 同一个集合）之后只能是 ASCII 数字：
+ * 不带正负号、小数点、指数与十六进制前缀，不超过 uint32。空项（`1,,2`、结尾的逗号、空串）不合法——`Number('')` 是 0，
+ * 不能拿它读。这个列表只用于诊断：协商用的是握手请求里的版本（{@link negotiateProtocolVersion}）
+ *
+ * @internal
+ */
+export function parseProtocolVersions(text: string): readonly number[] | undefined {
+  const versions: number[] = [];
+  for (const part of text.split(',')) {
+    const item = trimWhitespace(part);
+    const version = protocolVersionPattern.test(item) ? Number(item) : Number.NaN;
+    // 非数与超出上限的都不满足这个比较
+    if (!(version <= maxProtocolVersion)) {
+      return undefined;
+    }
+    versions.push(version);
+  }
+  return versions;
 }
 
 /**

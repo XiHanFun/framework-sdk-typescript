@@ -36,14 +36,13 @@ export abstract class ResultBase<T> {
   /**
    * 返回成功值
    *
-   * @throws {@link FrameworkError} 失败时，码与消息取自失败的错误
+   * @throws {@link FrameworkError} 失败时，由失败的错误转成（{@link FrameworkError.fromErrorInfo}）：码、消息、消息键与参数都保留
    */
   valueOrThrow(): T {
     if (this.ok) {
       return (this as unknown as Ok<T>).value;
     }
-    const error = (this as unknown as Fail<T>).error;
-    throw new FrameworkError(error.code, error.message);
+    throw FrameworkError.fromErrorInfo((this as unknown as Fail<T>).error);
   }
 
   /**
@@ -74,6 +73,22 @@ export abstract class ResultBase<T> {
    */
   toVoid(): Result<void> {
     return this.ok ? Result.success() : (this as unknown as Fail<void>);
+  }
+
+  /**
+   * 线上编码（RFC-0001「Result」）：成功是 `ok` 与 `value`，没有值时只有 `ok`；失败是 `ok` 与 `error`
+   *
+   * @remarks
+   * 值原样交出，它自己的 `toJSON`（如 Maybe 的无值写成 `null`）由写出的一方调用。写成文本用 {@link writeJson}：
+   * `JSON.stringify` 写不出 `bigint`，也分不出整数与整数值的浮点
+   */
+  toJSON(): { readonly ok: true; readonly value?: T } | { readonly ok: false; readonly error: ErrorInfoJson } {
+    if (!this.ok) {
+      return { ok: false, error: (this as unknown as Fail<T>).error.toJSON() };
+    }
+    const value = (this as unknown as Ok<T>).value;
+    // 没有值的成功只写 ok：带了 value（哪怕是 null）就不合读写规则
+    return value === undefined ? { ok: true } : { ok: true, value };
   }
 }
 
@@ -179,7 +194,7 @@ export const Result = Object.freeze({
   fromJSONMaybe<T>(json: unknown, decode: (value: JsonValue) => T): Result<Maybe<T>> {
     return read(json, (wire) => {
       if (!Object.hasOwn(wire, 'value')) {
-        throw invalidWire('A successful result on the wire needs a value.');
+        throw FrameworkError.invalidArgument('A successful result on the wire needs a value.');
       }
       const value = wire.value as JsonValue;
       return Result.ok(value === null ? Maybe.none<T>() : Maybe.some(decode(value)));
@@ -242,17 +257,17 @@ function fromJSON<T>(json: unknown, decode?: (value: JsonValue) => T): Result<T>
   if (decode === undefined) {
     return read<void>(json, (wire) => {
       if (Object.hasOwn(wire, 'value')) {
-        throw invalidWire("A successful result without a value must not carry 'value' on the wire.");
+        throw FrameworkError.invalidArgument("A successful result without a value must not carry 'value' on the wire.");
       }
       return succeeded;
     });
   }
   return read<T>(json, (wire) => {
     if (!Object.hasOwn(wire, 'value')) {
-      throw invalidWire('A successful result on the wire needs a value.');
+      throw FrameworkError.invalidArgument('A successful result on the wire needs a value.');
     }
     if (wire.value === null) {
-      throw invalidWire('The value of a successful result on the wire must not be null.');
+      throw FrameworkError.invalidArgument('The value of a successful result on the wire must not be null.');
     }
     return Result.ok(decode(wire.value as JsonValue));
   });
@@ -261,23 +276,19 @@ function fromJSON<T>(json: unknown, decode?: (value: JsonValue) => T): Result<T>
 /** 读出外层：`ok` 必填且是布尔，成功与失败互斥地带 `value` 或 `error`；成功的值交给 `success` 处理 */
 function read<T>(json: unknown, success: (wire: Record<string, unknown>) => Result<T>): Result<T> {
   if (!isPlainObject(json) || typeof json.ok !== 'boolean') {
-    throw invalidWire("A result on the wire must be a JSON object with a boolean 'ok'.");
+    throw FrameworkError.invalidArgument("A result on the wire must be a JSON object with a boolean 'ok'.");
   }
   if (json.ok) {
     if (Object.hasOwn(json, 'error')) {
-      throw invalidWire("A successful result on the wire must not carry 'error'.");
+      throw FrameworkError.invalidArgument("A successful result on the wire must not carry 'error'.");
     }
     return success(json);
   }
   if (Object.hasOwn(json, 'value')) {
-    throw invalidWire("A failed result on the wire must not carry 'value'.");
+    throw FrameworkError.invalidArgument("A failed result on the wire must not carry 'value'.");
   }
   if (!Object.hasOwn(json, 'error')) {
-    throw invalidWire('A failed result on the wire needs an error.');
+    throw FrameworkError.invalidArgument('A failed result on the wire needs an error.');
   }
   return Result.fail<T>(ErrorInfo.fromJSON(json.error));
-}
-
-function invalidWire(message: string): FrameworkError {
-  return new FrameworkError(ErrorCode.InvalidArgument, message);
 }

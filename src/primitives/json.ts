@@ -1,5 +1,7 @@
 import { ErrorCode } from './error-code.ts';
 import { FrameworkError } from './framework.ts';
+import { isJsonNumberText } from './number-grammar.ts';
+import { compareOrdinal } from './ordinal.ts';
 
 /**
  * 值模型里值是整数的双精度浮点（RFC-0010「模板」的值模型，ADR-0236）
@@ -45,9 +47,6 @@ export class Float64 {
   }
 }
 
-/** 数字的文法（RFC 8259），整串匹配 */
-const numberTextPattern = /^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?$/;
-
 /**
  * 保留原文的 JSON 数字（RFC-0011 规则 2，ADR-0236）
  *
@@ -64,7 +63,7 @@ export class JsonNumber {
    * @param text - 数字的原文
    */
   constructor(text: string) {
-    if (typeof text !== 'string' || !numberTextPattern.test(text)) {
+    if (typeof text !== 'string' || !isJsonNumberText(text)) {
       throw new FrameworkError(ErrorCode.InvalidArgument, 'A JsonNumber needs the text of a JSON number.');
     }
     this.text = text;
@@ -95,6 +94,25 @@ export class JsonNumber {
   toJSON(): number {
     return this.value;
   }
+}
+
+/**
+ * 判断一个值写出前要不要先调用它的 `toJSON`
+ *
+ * @remarks
+ * {@link Float64} 与 {@link JsonNumber} 也有 `toJSON`（给 `JSON.stringify` 用，返回 `number`），但不能经它写出：
+ * 换成 `number` 就丢了浮点的身份与数字的原文。{@link writeJson} 与 `Maybe` 的 `toJSON` 共用这一个判定
+ *
+ * @internal
+ */
+export function hasToJSON(value: unknown): value is { toJSON(): unknown } {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    !(value instanceof Float64) &&
+    !(value instanceof JsonNumber) &&
+    typeof (value as { toJSON?: unknown }).toJSON === 'function'
+  );
 }
 
 /**
@@ -257,7 +275,7 @@ function freezeJson(value: unknown, path: string, ancestors: Set<object>): JsonV
       throw notJson(path);
     }
     const copy: Record<string, JsonValue> = {};
-    for (const [name, member] of members.sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))) {
+    for (const [name, member] of members.sort(([left], [right]) => compareOrdinal(left, right))) {
       defineMember(copy, name, freezeJson(member, `${path}.${name}`, ancestors));
     }
     return Object.freeze(copy);

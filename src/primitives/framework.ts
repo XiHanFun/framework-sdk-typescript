@@ -1,4 +1,4 @@
-import { builtInMessages } from './built-in-messages.ts';
+import { resolveBuiltInMessage } from './built-in-messages.ts';
 import { ErrorCode, isErrorCode } from './error-code.ts';
 import { ErrorInfo } from './error-info.ts';
 import { freezeJsonObject, type JsonObject } from './json.ts';
@@ -64,14 +64,44 @@ export class FrameworkError extends Error {
   }
 
   /**
+   * 创建参数非法的编程错误，码为 `PRIMITIVES_VALIDATION_001`
+   *
+   * @param message - 面向开发者的英文句子，标识符加单引号
+   * @param options - 可带底层原因 `cause`
+   */
+  static invalidArgument(message: string, options?: FrameworkErrorOptions): FrameworkError {
+    return new FrameworkError(ErrorCode.InvalidArgument, message, options);
+  }
+
+  /**
    * 用消息键与参数创建：消息是 SDK 自带的英文模板填入参数（RFC-0011「错误码」）
    *
    * @remarks
    * 配置期与宿主共用的错误（操作 ID 重复登记、登记表已满）以它抛出，码、键与参数与宿主一致
    */
   static fromMessage(code: string, messageKey: string, details?: JsonObject): FrameworkError {
-    const message = builtInMessages.resolve(messageKey, 'en-US', details) ?? describe(messageKey, details);
+    const message = resolveBuiltInMessage(messageKey, details) ?? describe(messageKey, details);
     return new FrameworkError(code, message, details === undefined ? { messageKey } : { messageKey, details });
+  }
+
+  /**
+   * 把可恢复失败的描述转成异常：{@link Result} 的 `valueOrThrow`、清单的写出与插件的启动核对用
+   *
+   * @remarks
+   * 码与消息取自错误（消息是 {@link ErrorInfo.message}），消息键与参数照带，内部错误同样转换后成为 `cause`；
+   * 转换只在这一处，不会有的带键与参数、有的丢掉
+   *
+   * @throws {@link FrameworkError} 给出的不是 {@link ErrorInfo} 时，码为 `PRIMITIVES_VALIDATION_001`
+   */
+  static fromErrorInfo(error: ErrorInfo): FrameworkError {
+    if (!(error instanceof ErrorInfo)) {
+      throw FrameworkError.invalidArgument('A framework error can only be created from an ErrorInfo.');
+    }
+    return new FrameworkError(error.code, error.message, {
+      ...(error.messageKey === undefined ? {} : { messageKey: error.messageKey }),
+      ...(error.details === undefined ? {} : { details: error.details }),
+      ...(error.inner === undefined ? {} : { cause: FrameworkError.fromErrorInfo(error.inner) }),
+    });
   }
 
   /**

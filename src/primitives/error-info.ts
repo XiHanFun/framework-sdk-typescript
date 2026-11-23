@@ -1,9 +1,9 @@
-import { builtInMessages } from './built-in-messages.ts';
+import { resolveBuiltInMessage } from './built-in-messages.ts';
 import { ErrorCode, ErrorKind, errorCodeDomain, errorCodeKind, invalidErrorCode, isErrorCode } from './error-code.ts';
 import { FrameworkError } from './framework.ts';
 import { freezeJsonObject, isPlainObject, type JsonObject } from './json.ts';
 import { parseJson } from './json-text.ts';
-import { describe, isMessageKey, resolveMessage } from './messages.ts';
+import { describe, isMessageKey, resolveMessage, validateMessageKey } from './messages.ts';
 import { isBlank } from './whitespace.ts';
 
 /**
@@ -61,13 +61,7 @@ export class ErrorInfo {
    */
   static create(code: string, messageKey: string, details?: JsonObject, inner?: ErrorInfo): ErrorInfo {
     checkCode(code);
-    if (!isMessageKey(messageKey)) {
-      throw new FrameworkError(
-        ErrorCode.InvalidArgument,
-        `The message key '${messageKey}' must match <domain>.<segment>[.<segment>].`,
-      );
-    }
-    return new ErrorInfo(code, messageKey, undefined, copyDetails(details), checkInner(inner));
+    return new ErrorInfo(code, validateMessageKey(messageKey), undefined, copyDetails(details), checkInner(inner));
   }
 
   /**
@@ -156,7 +150,7 @@ export class ErrorInfo {
    */
   static fromJSON(value: unknown): ErrorInfo {
     if (!isPlainObject(value)) {
-      throw invalidWire('An error on the wire must be a JSON object.');
+      throw FrameworkError.invalidArgument('An error on the wire must be a JSON object.');
     }
     const code = value.code;
     if (typeof code !== 'string' || !isErrorCode(code)) {
@@ -165,21 +159,23 @@ export class ErrorInfo {
     const message = value.message;
     // 空串与只有空白都不合法（RFC-0001「Result」与「空白字符」），两端的空白原样保留
     if (typeof message !== 'string' || isBlank(message)) {
-      throw invalidWire(
+      throw FrameworkError.invalidArgument(
         "The field 'message' of an error on the wire must be a string that is not empty or whitespace.",
       );
     }
     let messageKey: string | undefined;
     if (Object.hasOwn(value, 'messageKey')) {
       if (typeof value.messageKey !== 'string' || !isMessageKey(value.messageKey)) {
-        throw invalidWire(`The message key '${String(value.messageKey)}' of an error on the wire is not valid.`);
+        throw FrameworkError.invalidArgument(
+          `The message key '${String(value.messageKey)}' of an error on the wire is not valid.`,
+        );
       }
       messageKey = value.messageKey;
     }
     let details: JsonObject | undefined;
     if (Object.hasOwn(value, 'details')) {
       if (!isPlainObject(value.details)) {
-        throw invalidWire("The field 'details' of an error on the wire must be a JSON object.");
+        throw FrameworkError.invalidArgument("The field 'details' of an error on the wire must be a JSON object.");
       }
       details = freezeJsonObject(value.details, 'details');
     }
@@ -201,8 +197,9 @@ export class ErrorInfo {
    * 面向人的消息
    *
    * @remarks
-   * 依次取：已解析文案；按进程默认区域解析的消息键（见 {@link setDefaultMessages}）；SDK 自带的英文模板
-   * （{@link builtInMessages}）；`键 (参数)` 的描述。消息不参与程序判断
+   * 依次取：已解析文案；按进程默认区域解析的消息键（见 {@link setDefaultMessages}）；SDK 内置的英文模板
+   * （{@link builtInMessages} 的键，加上 SDK 其他模块加载时登记的，如插件运行时的 `plugins.*`）；`键 (参数)` 的描述。
+   * 消息不参与程序判断
    */
   get message(): string {
     if (this.text !== undefined) {
@@ -214,7 +211,7 @@ export class ErrorInfo {
     }
     return (
       resolveMessage(this.messageKey, this.details) ??
-      builtInMessages.resolve(this.messageKey, 'en-US', this.details) ??
+      resolveBuiltInMessage(this.messageKey, this.details) ??
       describe(this.messageKey, this.details)
     );
   }
@@ -304,8 +301,4 @@ function checkInner(inner: ErrorInfo | undefined): ErrorInfo | undefined {
 
 function copyDetails(details: JsonObject | undefined): JsonObject | undefined {
   return details === undefined ? undefined : freezeJsonObject(details, 'details');
-}
-
-function invalidWire(message: string): FrameworkError {
-  return new FrameworkError(ErrorCode.InvalidArgument, message);
 }

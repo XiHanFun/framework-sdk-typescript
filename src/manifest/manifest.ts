@@ -2,6 +2,7 @@ import {
   ErrorCode,
   ErrorInfo,
   FrameworkError,
+  isOperationId,
   isPipelineStage,
   JsonMembers,
   type JsonNode,
@@ -260,11 +261,7 @@ export function writeManifest(manifest: Manifest): string {
   const text = write(manifest);
   const read = readManifest(text);
   if (!read.ok) {
-    const { error } = read;
-    throw new FrameworkError(error.code, error.message, {
-      ...(error.messageKey === undefined ? {} : { messageKey: error.messageKey }),
-      ...(error.details === undefined ? {} : { details: error.details }),
-    });
+    throw FrameworkError.fromErrorInfo(read.error);
   }
   return text;
 }
@@ -373,8 +370,6 @@ const activationPattern = /^(onStartup|onOperation:[a-z0-9.*-]+|onEvent:[a-z0-9.
 const permissionPattern = /^(net\.outbound|fs\.read|fs\.write|capability):.+$/;
 const bindingNamePattern = /^[a-z][a-z0-9-]*$/;
 const bindingTypePattern = /^[a-z]+(:[a-z]+)?$/;
-/** 操作 ID 文法 `<resource>.<verb>`（conventions/operation-ids.md；Schema 自 ADR-0233 起与它相同） */
-const operationPattern = /^[a-z][a-z0-9]*(-[a-z0-9]+)*\.[a-z][a-z0-9]*(-[a-z0-9]+)*$/;
 const sectionPattern = /^XiHan:[A-Z][A-Za-z0-9]*(:[A-Z][A-Za-z0-9]*)*$/;
 const healthPattern = /^[a-z][a-z0-9.-]*$/;
 const permissionCodePattern = /^[a-z][a-z0-9-]*(\.[a-z][a-z0-9-]*)+$/;
@@ -449,7 +444,8 @@ const rootShape: ObjectShape = shape(
             ['middleware', 'stage'],
           ),
         ),
-        operations: list(matches(operationPattern)),
+        // 操作 ID 的文法在原语层（conventions/operation-ids.md；Schema 自 ADR-0233 起与它相同），与操作契约共用
+        operations: list(text(isOperationId)),
         config: object({ section: matches(sectionPattern), schema: anyText }, ['section']),
         permissions: list(matches(permissionCodePattern), { unique: true }),
         health: list(matches(healthPattern)),

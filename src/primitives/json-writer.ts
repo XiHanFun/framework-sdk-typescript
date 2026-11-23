@@ -1,4 +1,4 @@
-import { Float64, isIntegerNumber, JsonMembers, JsonNumber, maxInt64, minInt64 } from './json.ts';
+import { Float64, hasToJSON, isIntegerNumber, JsonMembers, JsonNumber, maxInt64, minInt64 } from './json.ts';
 
 /** 控制字符的短写 */
 const shortEscapes: Readonly<Record<number, string>> = Object.freeze({
@@ -164,16 +164,6 @@ function writeValue(input: unknown, ancestors: Set<object>, reject: boolean): st
   } finally {
     ancestors.delete(value);
   }
-}
-
-function hasToJSON(value: unknown): value is { toJSON(): unknown } {
-  return (
-    typeof value === 'object' &&
-    value !== null &&
-    !(value instanceof Float64) &&
-    !(value instanceof JsonNumber) &&
-    typeof (value as { toJSON?: unknown }).toJSON === 'function'
-  );
 }
 
 /** 浮点的线上写法：非有限值写成字符串或写不出，整数值补上 `.0` */

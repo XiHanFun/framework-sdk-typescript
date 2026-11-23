@@ -1,4 +1,4 @@
-import { ErrorCode, FrameworkError, isStability, Stability } from '../primitives/index.ts';
+import { FrameworkError, isOperationId, isStability, Stability } from '../primitives/index.ts';
 
 /**
  * 内核登记的操作错误码
@@ -53,16 +53,6 @@ export const Expose = Object.freeze({
 export type Expose = (typeof Expose)[keyof typeof Expose];
 
 const exposeValues: readonly string[] = Object.values(Expose);
-
-/** 操作 ID 文法 `<resource>.<verb>`（conventions/operation-ids.md） */
-const operationIdPattern = /^[a-z][a-z0-9]*(-[a-z0-9]+)*\.[a-z][a-z0-9]*(-[a-z0-9]+)*$/;
-
-/**
- * 判断操作 ID 是否符合 `<resource>.<verb>`
- */
-export function isOperationId(id: string): boolean {
-  return operationIdPattern.test(id);
-}
 
 /** 只在类型层面携带请求与响应类型 */
 declare const requestType: unique symbol;
@@ -137,41 +127,37 @@ export function defineContract<Req, Res>(init: OperationContractInit): Operation
  */
 export function checkContract(contract: OperationContract): void {
   if (typeof contract !== 'object' || contract === null) {
-    throw invalid('An operation contract must be an object.');
+    throw FrameworkError.invalidArgument('An operation contract must be an object.');
   }
   const { id } = contract;
   if (typeof id !== 'string' || !isOperationId(id)) {
-    throw invalid(`The operation ID '${id}' must match <resource>.<verb>.`);
+    throw FrameworkError.invalidArgument(`The operation ID '${id}' must match <resource>.<verb>.`);
   }
   if (contract.permission !== undefined && contract.policy !== undefined) {
-    throw invalid(`The operation '${id}' must declare either a permission or a policy.`);
+    throw FrameworkError.invalidArgument(`The operation '${id}' must declare either a permission or a policy.`);
   }
   for (const [field, value] of [
     ['permission', contract.permission],
     ['policy', contract.policy],
   ] as const) {
     if (value !== undefined && (typeof value !== 'string' || value === '')) {
-      throw invalid(`The ${field} of the operation '${id}' must not be empty.`);
+      throw FrameworkError.invalidArgument(`The ${field} of the operation '${id}' must not be empty.`);
     }
   }
   if (!isStability(contract.stability)) {
-    throw invalid(`The stability of the operation '${id}' is not valid.`);
+    throw FrameworkError.invalidArgument(`The stability of the operation '${id}' is not valid.`);
   }
   if (!Array.isArray(contract.expose)) {
-    throw invalid(`The operation '${id}' must list the protocols it is exposed to.`);
+    throw FrameworkError.invalidArgument(`The operation '${id}' must list the protocols it is exposed to.`);
   }
   const seen = new Set<string>();
   for (const protocol of contract.expose) {
     if (!exposeValues.includes(protocol)) {
-      throw invalid(`The operation '${id}' cannot be exposed to '${protocol}'.`);
+      throw FrameworkError.invalidArgument(`The operation '${id}' cannot be exposed to '${protocol}'.`);
     }
     if (seen.has(protocol)) {
-      throw invalid(`The operation '${id}' lists '${protocol}' more than once.`);
+      throw FrameworkError.invalidArgument(`The operation '${id}' lists '${protocol}' more than once.`);
     }
     seen.add(protocol);
   }
-}
-
-function invalid(message: string): FrameworkError {
-  return new FrameworkError(ErrorCode.InvalidArgument, message);
 }

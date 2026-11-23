@@ -1,7 +1,5 @@
 import { Float64, isPlainObject, JsonNumber, type JsonObject, type JsonValue } from '../primitives/index.ts';
-
-/** JSON 数字的文法（RFC 8259）：字符串叶子读成数字时只认它，整串匹配 */
-const jsonNumberPattern = /^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?$/;
+import { isJsonNumberText } from '../primitives/number-grammar.ts';
 
 /**
  * 配置节的类型化读取（plugin/lifecycle.md §7.2）
@@ -54,7 +52,8 @@ export class ConfigurationSection {
   number(name: string): number | undefined {
     const value = this.get(name);
     if (typeof value === 'string') {
-      return jsonNumberPattern.test(value) ? Number(value) : undefined;
+      // 字符串叶子读成数字时只认 JSON 数字的文法（RFC 8259），与 JsonNumber 的原文共用一个判定
+      return isJsonNumberText(value) ? Number(value) : undefined;
     }
     if (typeof value === 'number') {
       return value;

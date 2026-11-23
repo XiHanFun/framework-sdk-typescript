@@ -38,3 +38,23 @@ export function isBlank(text: string): boolean {
   }
   return true;
 }
+
+/**
+ * 去掉文本两端的空白（RFC-0001「空白字符」）
+ *
+ * @remarks
+ * 不用 `String.prototype.trim`：它不去 U+0085、却去 U+FEFF，与规范的空白不是同一个集合
+ *
+ * @internal
+ */
+export function trimWhitespace(text: string): string {
+  let start = 0;
+  let end = text.length;
+  while (start < end && isWhitespace(text.charCodeAt(start))) {
+    start += 1;
+  }
+  while (end > start && isWhitespace(text.charCodeAt(end - 1))) {
+    end -= 1;
+  }
+  return text.slice(start, end);
+}

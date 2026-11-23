@@ -1,7 +1,6 @@
 import { type InvocationContext, InvocationMessageKey } from '../invocation/index.ts';
 import { AppOwner } from '../pipeline/index.ts';
 import {
-  ErrorCode,
   ErrorInfo,
   FrameworkError,
   isPlainObject,
@@ -10,6 +9,7 @@ import {
   readJsonText,
   writeJson,
 } from '../primitives/index.ts';
+import { compareOrdinal } from '../primitives/ordinal.ts';
 
 import { checkContract, type OperationContract, OperationErrorCode, OperationMessageKey } from './contract.ts';
 import { RequestDecodeError, RequestShape } from './request-shape.ts';
@@ -124,7 +124,7 @@ export class OperationDescriptor {
 export function internalsOf(descriptor: OperationDescriptor): Internals {
   const entry = internals.get(descriptor);
   if (entry === undefined) {
-    throw new FrameworkError(ErrorCode.InvalidArgument, 'The operation descriptor was not created by a registry.');
+    throw FrameworkError.invalidArgument('The operation descriptor was not created by a registry.');
   }
   return entry;
 }
@@ -151,13 +151,13 @@ export class OperationRegistry {
     const { contract } = registration;
     checkContract(contract);
     if (typeof registration.handler !== 'function') {
-      throw invalid(`The operation '${contract.id}' needs a handler function.`);
+      throw FrameworkError.invalidArgument(`The operation '${contract.id}' needs a handler function.`);
     }
     if (!(registration.request instanceof RequestShape)) {
-      throw invalid(`The operation '${contract.id}' needs a request shape.`);
+      throw FrameworkError.invalidArgument(`The operation '${contract.id}' needs a request shape.`);
     }
     if (registration.owner !== undefined && (typeof registration.owner !== 'string' || registration.owner === '')) {
-      throw invalid(`The owner of the operation '${contract.id}' must not be empty.`);
+      throw FrameworkError.invalidArgument(`The owner of the operation '${contract.id}' must not be empty.`);
     }
     if (registration.schema !== undefined) {
       checkSchema(contract.id, 'request', registration.schema.request);
@@ -194,9 +194,7 @@ export class OperationRegistry {
    */
   list(): readonly OperationDescriptor[] {
     return Object.freeze(
-      [...this.#descriptors.values()].sort((left, right) =>
-        left.contract.id < right.contract.id ? -1 : left.contract.id > right.contract.id ? 1 : 0,
-      ),
+      [...this.#descriptors.values()].sort((left, right) => compareOrdinal(left.contract.id, right.contract.id)),
     );
   }
 
@@ -288,10 +286,6 @@ function checkSchema(id: string, part: 'request' | 'response', schema: string): 
     parsed = undefined;
   }
   if (!isPlainObject(parsed)) {
-    throw invalid(`The ${part} schema of the operation '${id}' must be a JSON object.`);
+    throw FrameworkError.invalidArgument(`The ${part} schema of the operation '${id}' must be a JSON object.`);
   }
-}
-
-function invalid(message: string): FrameworkError {
-  return new FrameworkError(ErrorCode.InvalidArgument, message);
 }
