@@ -220,8 +220,8 @@ export class PipelineBuilder {
     }
     let next = terminal;
     const sorted = this.#sorted();
-    for (let index = sorted.length - 1; index >= 0; index -= 1) {
-      const { middleware } = sorted[index] as Registration;
+    // 从最后一个中间件往前包：每一个的下游是它后面已经包好的那一步
+    for (const { middleware } of sorted.toReversed()) {
       const downstream = next;
       next = (context) => middleware.invoke(context, downstream);
     }
@@ -397,15 +397,15 @@ function topologicalSort(
   const ordered: Registration[] = [];
   const remaining = [...members];
   while (remaining.length > 0) {
-    const picked = remaining.findIndex((candidate) => (incoming.get(candidate) ?? 0) === 0);
-    if (picked < 0) {
+    const node = remaining.find((candidate) => (incoming.get(candidate) ?? 0) === 0);
+    if (node === undefined) {
       const stuck = remaining.map((registration) => `'${registration.descriptor.display}'`).join(', ');
       throw new FrameworkError(
         PipelineErrorCode.Cycle,
         `Middleware ordering constraints in stage '${stage}' form a cycle: ${stuck}.`,
       );
     }
-    const [node] = remaining.splice(picked, 1) as [Registration];
+    remaining.splice(remaining.indexOf(node), 1);
     ordered.push(node);
     for (const successor of outgoing.get(node) ?? []) {
       incoming.set(successor, (incoming.get(successor) ?? 0) - 1);

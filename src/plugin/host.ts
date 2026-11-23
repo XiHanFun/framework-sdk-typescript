@@ -212,14 +212,12 @@ export class Host {
   }
 
   /**
-   * 发出之前的本地核对（invocation.md §5），依次：① 有没有可用的回调端点；按宿主的顺序 ② 权限、③ 上下文的租户；
-   * ④ 上下文的截止时间已过或已被取消，结果与映射表相应的一行相同（截止时间已过按 `DeadlineExceeded`，已被取消按
-   * 「`Cancelled`，取消信号已触发」）。客户端已经关闭的按连不上宿主。都通过时为 `undefined`
+   * 发出之前的本地核对（invocation.md §5），依次：① 有没有可用的回调端点（由 {@link Host.#call} 先核对，它要拿端点去连）；
+   * 按宿主的顺序 ② 权限、③ 上下文的租户；④ 上下文的截止时间已过或已被取消，结果与映射表相应的一行相同
+   * （截止时间已过按 `DeadlineExceeded`，已被取消按「`Cancelled`，取消信号已触发」）。客户端已经关闭的按连不上宿主。
+   * 都通过时为 `undefined`
    */
   #refusal(context: InvocationContext, rpc: CallbackRpc, operation: string, permission: string): ErrorInfo | undefined {
-    if (this.endpoint === undefined) {
-      return hostUnavailable(this.#pluginId, PluginReason.NoCallbackEndpoint);
-    }
     if (!this.#permitted(permission)) {
       return callbackDenied(this.#pluginId, permission);
     }
@@ -254,6 +252,11 @@ export class Host {
       done: (error: ServiceError | null, value: T) => void,
     ) => { cancel(): void },
   ): Promise<Result<T>> {
+    // 本地核对的第一项：没有可用的回调端点就不发请求；端点在这里取出，后面连接时用的就是核对过的这一个
+    const endpoint = this.endpoint;
+    if (endpoint === undefined) {
+      return Promise.resolve(Result.fail(hostUnavailable(this.#pluginId, PluginReason.NoCallbackEndpoint)));
+    }
     const refusal = this.#refusal(context, rpc, operation, permission);
     if (refusal !== undefined) {
       return Promise.resolve(Result.fail(refusal));
@@ -262,7 +265,7 @@ export class Host {
     metadata.set(PluginProtocol.sessionMetadataKey, this.#session);
     const options = context.deadline === undefined ? {} : { deadline: new Date(context.deadline) };
     return new Promise((resolve) => {
-      const client = this.#connect(this.endpoint as PluginEndpoint);
+      const client = this.#connect(endpoint);
       const call = start(client, metadata, options, (error, value) => {
         context.signal.removeEventListener('abort', abort);
         if (error === null) {
