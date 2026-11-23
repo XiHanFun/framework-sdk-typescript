@@ -154,6 +154,20 @@ export interface PluginStop {
 }
 
 /**
+ * 配置与启动回调的附加参数
+ */
+export interface PluginHookOptions {
+  /**
+   * 这次回调的取消信号：宿主取消了这次 `Configure` / `Start` 调用，或运行时开始收尾（stdin 关闭、SIGTERM、
+   * {@link PluginOptions.signal}）时中止
+   *
+   * @remarks
+   * 只是通知（RFC-0003）：运行时不强行中止回调，照常等它返回，结果照 lifecycle.md §7.2、§7.3 处理
+   */
+  readonly signal: AbortSignal;
+}
+
+/**
  * 插件接入生命周期的回调；都可省略
  *
  * @remarks
@@ -161,10 +175,16 @@ export interface PluginStop {
  * `PLUGINS_UNEXPECTED_001` + `plugins.process.failed` 返回，`reason` 是异常的简单类型名（lifecycle.md §7.6）
  */
 export interface PluginHooks {
-  /** `Configure` 时调用；失败即插件进入 Failed */
-  readonly configure?: (configuration: PluginConfiguration) => Promise<Result<void>> | Result<void>;
-  /** `Start` 时调用；成功之后（按健康进入 Ready 或 Degraded）接受调用，失败即插件进入 Failed */
-  readonly start?: () => Promise<Result<void>> | Result<void>;
+  /** `Configure` 时调用；失败即插件进入 Failed。第二个参数带这次回调的取消信号，不用可以不收 */
+  readonly configure?: (
+    configuration: PluginConfiguration,
+    options: PluginHookOptions,
+  ) => Promise<Result<void>> | Result<void>;
+  /**
+   * `Start` 时调用；成功之后（按健康进入 Ready 或 Degraded）接受调用，失败即插件进入 Failed。
+   * 参数带这次回调的取消信号，不用可以不收
+   */
+  readonly start?: (options: PluginHookOptions) => Promise<Result<void>> | Result<void>;
   /**
    * 停止时调用：在途调用已经结束或宽限已到，在这里释放资源
    *
@@ -245,6 +265,14 @@ export interface PluginOptions {
   readonly env?: Readonly<Record<string, string | undefined>>;
   /** 宿主保持打开的输入，读到结尾即收尾退出；省略为 `process.stdin` */
   readonly stdin?: NodeJS.ReadableStream;
+  /**
+   * 调用方的取消信号：中止即收尾退出，与 stdin 关闭、SIGTERM 相同（lifecycle.md §7.7）；省略时只有后两者
+   *
+   * @remarks
+   * 在同一个进程里起插件的调用方（测试、把插件嵌进别的程序）用它让插件停下，{@link servePlugin} 的 Promise 在收尾之后完成。
+   * 启动之前就已中止的，握手行照写，随即收尾（与 Go SDK 的 `Serve(ctx, …)` 相同）
+   */
+  readonly signal?: AbortSignal;
   /** 只写握手行；省略为 `process.stdout` */
   readonly stdout?: LogTarget;
   /** 运行时的日志；省略时写 `process.stderr` */
@@ -283,6 +311,9 @@ const shutdownLimit = 3000;
 
 /** 收尾完成之后、进程还没退出时再等的毫秒数 */
 const exitDelay = 1000;
+
+/** 调用方的信号（{@link PluginOptions.signal}）中止时的日志消息 */
+const abortMessage = 'abort signal received; stopping';
 
 /** gRPC 服务端优雅关闭等在途 RPC 的上限，之后强制关闭 */
 const serverShutdownLimit = 1000;
@@ -383,6 +414,8 @@ class PluginRuntime {
   /** 在途调用与投递的取消：停止时宽限到了、收尾时立即触发（lifecycle.md §7.5、§7.7） */
   readonly #inflight = new Set<AbortController>();
   readonly #idle: (() => void)[] = [];
+  /** 正在执行的配置、启动回调的取消：两个回调各调一次，这里至多两项 */
+  readonly #hooks = new Set<AbortController>();
   /** 清单 ID：读出清单之前为空串，只用在日志里 */
   #id = '';
   /** 监听之前备好的状态；备好之前为 `undefined` */
@@ -447,6 +480,10 @@ class PluginRuntime {
       endpoint: `${bound.endpoint.network} ${bound.endpoint.address}`,
       instance: this.#env[PluginEnvironment.Instance] ?? '',
     });
+    // 调用方的信号在启动之前就已中止：不会再有 abort 事件，握手行写出之后在这里收尾
+    if (this.#options.signal?.aborted === true) {
+      this.#requestShutdown(abortMessage);
+    }
     await done;
   }
 
@@ -599,11 +636,13 @@ class PluginRuntime {
     return new Host(endpoint, session, manifest.id, this.#tenants, permitted);
   }
 
-  /** stdin 读到结尾（或读出错）与 SIGTERM 都是收尾请求（lifecycle.md §7.7） */
+  /** stdin 读到结尾（或读出错）、SIGTERM 与调用方的信号中止都是收尾请求（lifecycle.md §7.7） */
   #watchInputs(): void {
     const stdin = this.#options.stdin ?? process.stdin;
+    const signal = this.#options.signal;
     const close = () => this.#requestShutdown('stdin closed; stopping');
     const terminate = () => this.#requestShutdown('SIGTERM received; stopping');
+    const abort = () => this.#requestShutdown(abortMessage);
     const drain = () => {};
     stdin.on('data', drain);
     stdin.once('end', close);
@@ -611,7 +650,9 @@ class PluginRuntime {
     stdin.once('error', close);
     stdin.resume();
     process.once('SIGTERM', terminate);
+    signal?.addEventListener('abort', abort, { once: true });
     this.#detach = () => {
+      signal?.removeEventListener('abort', abort);
       stdin.removeListener('data', drain);
       stdin.removeListener('end', close);
       stdin.removeListener('close', close);
@@ -641,6 +682,10 @@ class PluginRuntime {
     // 不让这个定时器拖住进程：收尾提前完成、事件循环空了，进程照常退出
     timer.unref();
     this.#abortInflight();
+    // 正在执行的配置、启动回调也得到通知：进程最多 3 秒后退出
+    for (const controller of this.#hooks) {
+      controller.abort();
+    }
     void this.#wind('shutdown', shutdownLimit).then(() => this.#stop());
   }
 
@@ -649,8 +694,8 @@ class PluginRuntime {
     type Unary<Req, Res> = ServerUnaryCall<Req, Res>;
     return {
       handshake: this.#unary((call: Unary<pb.HandshakeRequest, pb.HandshakeResponse>) => this.#handshake(call.request)),
-      configure: this.#unary((call: Unary<pb.ConfigureRequest, pb.ConfigureResponse>) => this.#configure(call.request)),
-      start: this.#unary((_call: Unary<pb.StartRequest, pb.StartResponse>) => this.#start()),
+      configure: this.#unary((call: Unary<pb.ConfigureRequest, pb.ConfigureResponse>) => this.#configure(call)),
+      start: this.#unary((call: Unary<pb.StartRequest, pb.StartResponse>) => this.#start(call)),
       stop: this.#unary(
         (call: Unary<pb.StopRequest, pb.StopResponse>) => this.#stopCall(call.request),
         // 应答送出之后再结束健康推送、停止服务：优雅停止要等包括这次 Stop 在内的在途 RPC 结束
@@ -748,7 +793,8 @@ class PluginRuntime {
   /**
    * 配置（lifecycle.md §7.2）：空等同 `{}`；配置节必须通过共同的 JSON 读取检查且是对象，否则不调回调、进入 Failed
    */
-  async #configure(request: pb.ConfigureRequest): Promise<pb.ConfigureResponse> {
+  async #configure(call: ServerUnaryCall<pb.ConfigureRequest, pb.ConfigureResponse>): Promise<pb.ConfigureResponse> {
+    const request = call.request;
     if (this.#lifecycle.state !== LifecycleState.Resolved) {
       throw statusError(grpcStatus.FAILED_PRECONDITION, 'Configure requires a completed handshake.');
     }
@@ -769,7 +815,12 @@ class PluginRuntime {
         workDirectory: request.workDirectory,
       });
       const hook = this.#options.hooks?.configure;
-      outcome = hook === undefined ? Result.success() : await this.#runHook('configure', () => hook(configuration));
+      outcome =
+        hook === undefined
+          ? Result.success()
+          : await this.#withHookSignal(call, (signal) =>
+              this.#runHook('configure', () => hook(configuration, Object.freeze({ signal }))),
+            );
     }
     this.#settle(LifecycleState.Configured, outcome, 'configure failed');
     return { status: toStatus(outcome) };
@@ -779,12 +830,15 @@ class PluginRuntime {
    * 启动（lifecycle.md §7.3）：启动回调成功后进入 Started，有健康回调时立即求一次、按结果进入 Ready、Degraded 或 Failed，
    * 没有健康回调即 Ready，然后才应答
    */
-  async #start(): Promise<pb.StartResponse> {
+  async #start(call: ServerUnaryCall<pb.StartRequest, pb.StartResponse>): Promise<pb.StartResponse> {
     if (this.#lifecycle.state !== LifecycleState.Configured) {
       throw statusError(grpcStatus.FAILED_PRECONDITION, 'Start requires a successful Configure.');
     }
     const hook = this.#options.hooks?.start;
-    const outcome = hook === undefined ? Result.success() : await this.#runHook('start', () => hook());
+    const outcome =
+      hook === undefined
+        ? Result.success()
+        : await this.#withHookSignal(call, (signal) => this.#runHook('start', () => hook(Object.freeze({ signal }))));
     this.#settle(LifecycleState.Started, outcome, 'start failed');
     if (outcome.ok) {
       this.#started = true;
@@ -901,6 +955,30 @@ class PluginRuntime {
       this.#finish();
     })();
     return this.#shutdown;
+  }
+
+  /**
+   * 给一次配置或启动回调备好取消信号：宿主取消这次调用即中止，开始收尾时由 {@link PluginRuntime.#requestShutdown} 一并中止；
+   * 已经在收尾时到达的调用，信号一开始就是中止的。只通知，不强行中止回调
+   */
+  async #withHookSignal<Req, Res, T>(
+    call: ServerUnaryCall<Req, Res>,
+    run: (signal: AbortSignal) => Promise<T>,
+  ): Promise<T> {
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    if (call.cancelled || this.#shutdownRequested) {
+      controller.abort();
+    } else {
+      call.once('cancelled', abort);
+    }
+    this.#hooks.add(controller);
+    try {
+      return await run(controller.signal);
+    } finally {
+      call.removeListener('cancelled', abort);
+      this.#hooks.delete(controller);
+    }
   }
 
   /** 执行一个生命周期回调：抛出的异常只把文本写进日志，作为 `PLUGINS_UNEXPECTED_001` 返回，`reason` 是简单类型名 */

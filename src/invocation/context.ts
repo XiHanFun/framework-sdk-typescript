@@ -111,7 +111,8 @@ let readDeadlineSignalled: (context: InvocationContext) => boolean;
  * 一次调用的上下文（RFC-0003）：取消与截止时间、W3C 追踪、已登记的 Baggage 与请求作用域对象袋
  *
  * @remarks
- * 不可变：`with` 开头的方法派生新的上下文。派生上下文共享取消信号、截止时间、追踪与对象袋，Baggage 按值复制。
+ * 不可变：`with` 开头的方法派生新的上下文。派生上下文共享取消信号、截止时间、追踪与对象袋，Baggage 按值复制；
+ * {@link InvocationContext.withSignal} 派生的另加一个取消信号。
  * 不绑定任何协议，载体映射由协议适配器与插件运行时实现
  */
 export class InvocationContext {
@@ -268,6 +269,24 @@ export class InvocationContext {
       Object.entries(this.#state.baggage).filter(([key]) => isBaggageKeyRegistered(key)),
     );
     return new InvocationContext({ ...this.#state, baggage: Object.freeze(baggage) });
+  }
+
+  /**
+   * 派生一个多一个取消信号的上下文：给出的信号或原上下文的信号任一中止，派生的上下文即中止
+   *
+   * @remarks
+   * 截止时间、追踪、Baggage 与对象袋与原上下文共享，原上下文不受给出的信号影响。取消只会收紧、不会放宽：
+   * 派生的上下文仍随调用方的取消与截止时间中止（RFC-0003 第 1、2 条），所以内部用 `AbortSignal.any` 合并而不是替换。
+   * 归因不变：截止信号已触发即超时，否则按中止的原因（见 {@link cancellationOf}，`TimeoutError` 为超时）。
+   * 给下游的一段工作加自己的取消或超时时用它，如 `next(context.withSignal(AbortSignal.timeout(500)))`
+   *
+   * @throws {@link FrameworkError} 给出的不是 `AbortSignal` 时，码为 `PRIMITIVES_VALIDATION_001`
+   */
+  withSignal(signal: AbortSignal): InvocationContext {
+    if (!(signal instanceof AbortSignal)) {
+      throw FrameworkError.invalidArgument('The signal of an invocation context must be an AbortSignal.');
+    }
+    return new InvocationContext({ ...this.#state, signal: AbortSignal.any([this.#state.signal, signal]) });
   }
 
   /** 当前租户 ID；没有时为 `undefined` */

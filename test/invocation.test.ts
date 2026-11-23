@@ -292,3 +292,55 @@ test('上下文的错误码与消息键与内核错误向量一致', () => {
     messages.find((message) => message.key === InvocationMessageKey.Cancelled)?.template,
   );
 });
+
+test('withSignal 派生的上下文在给出的信号或原上下文中止时都中止，共享截止时间、追踪、Baggage 与对象袋', () => {
+  const caller = new AbortController();
+  const extra = new AbortController();
+  const context = InvocationContext.create({
+    signal: caller.signal,
+    deadline: Date.now() + 60_000,
+    baggage: { [BaggageKey.Tenant]: 't1' },
+  });
+  const key = new ItemKey<string>('test.shared');
+  context.setItem(key, 'before');
+  const derived = context.withSignal(extra.signal);
+  assert.notEqual(derived, context);
+  assert.ok(Object.isFrozen(derived));
+  assert.equal(derived.traceId, context.traceId);
+  assert.equal(derived.spanId, context.spanId);
+  assert.equal(derived.traceParent, context.traceParent);
+  assert.equal(derived.deadline, context.deadline);
+  assert.deepEqual(derived.baggage, { [BaggageKey.Tenant]: 't1' });
+  // 对象袋是同一个
+  assert.equal(derived.findItem(key), 'before');
+  derived.setItem(key, 'after');
+  assert.equal(context.findItem(key), 'after');
+
+  // 给出的信号中止：派生的上下文中止，原上下文不受影响
+  extra.abort();
+  assert.ok(derived.signal.aborted);
+  assert.equal(derived.cancellation?.code, InvocationErrorCode.Cancelled);
+  assert.ok(!context.signal.aborted);
+  assert.equal(context.cancellation, undefined);
+
+  // 原上下文的调用方取消：派生的上下文也中止，取消只会收紧
+  const other = context.withSignal(new AbortController().signal);
+  assert.ok(!other.signal.aborted);
+  caller.abort();
+  assert.ok(context.signal.aborted && other.signal.aborted);
+  assert.equal(other.cancellation?.code, InvocationErrorCode.Cancelled);
+  // 派生可以接着派生，信号一路带下去
+  assert.ok(other.withBaggage(BaggageKey.Correlation, 'c1').signal.aborted);
+
+  // 已经中止的信号：派生出来就是中止的；以 TimeoutError 中止的按超时归因
+  assert.ok(InvocationContext.create().withSignal(AbortSignal.abort()).signal.aborted);
+  const timed = InvocationContext.create().withSignal(AbortSignal.abort(new DOMException('late', 'TimeoutError')));
+  assert.equal(timed.cancellation?.code, InvocationErrorCode.DeadlineExceeded);
+  // 截止时间照旧：截止信号已触发即报超时，给出的信号同时中止也一样
+  const expired = InvocationContext.create({ deadline: Date.now() - 1 }).withSignal(AbortSignal.abort());
+  assert.ok(expired.signal.aborted);
+  assert.equal(expired.cancellation?.code, InvocationErrorCode.DeadlineExceeded);
+
+  throwsInvalid(() => context.withSignal(undefined as unknown as AbortSignal));
+  throwsInvalid(() => context.withSignal({ aborted: false } as unknown as AbortSignal));
+});

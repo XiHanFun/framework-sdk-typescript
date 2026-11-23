@@ -44,6 +44,7 @@ export {
   type PluginConfiguration,
   type PluginHealth,
   type PluginHealthItem,
+  type PluginHookOptions,
   type PluginHooks,
   type PluginOptions,
   type PluginStop,

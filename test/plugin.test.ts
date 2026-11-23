@@ -936,9 +936,10 @@ test('配置节：空等同 {}，不是 JSON 对象时不调回调、进入 Fail
   for (const [configuration, hooks, code, key, details] of cases) {
     const counted = {
       ...hooks,
-      configure: (value: Parameters<NonNullable<NonNullable<PluginOptions['hooks']>['configure']>>[0]) => {
+      // 包一层计数：参数原样转交，含带取消信号的第二个参数
+      configure: (...args: Parameters<NonNullable<NonNullable<PluginOptions['hooks']>['configure']>>) => {
         calls += 1;
-        return hooks?.configure?.(value) ?? Result.success();
+        return hooks?.configure?.(...args) ?? Result.success();
       },
     };
     calls = 0;
@@ -2586,5 +2587,135 @@ test('事件处理器可以同步返回 Result：成功、失败与同步抛出�
     );
   } finally {
     await plugin.close();
+  }
+});
+
+// ── 取消信号 ──────────────────────────────────────────────────────────────────
+
+test('PluginOptions.signal：调用方的信号中止即按 stdin 关闭与 SIGTERM 同样收尾，servePlugin 的 Promise 随之完成（lifecycle.md §7.7）', async () => {
+  const controller = new AbortController();
+  const stops: string[] = [];
+  const plugin = await launch({
+    signal: controller.signal,
+    hooks: {
+      stop: (value) => {
+        stops.push(value.reason);
+        return Result.success();
+      },
+    },
+  });
+  await startPlugin(plugin.client);
+  const waiting = invoke(plugin.client, 'probes.wait');
+  await plugin.probe.waitStarted.wait;
+  const began = Date.now();
+  controller.abort();
+  assertFailure((await waiting).status, 'KERNEL_CANCELLED_001', 'kernel.invocation.cancelled', undefined);
+  assert.ok((plugin.probe.abortedAt ?? 0) - began < 500, 'in-flight calls are cancelled immediately');
+  await plugin.served;
+  assert.deepEqual(stops, ['shutdown']);
+  assert.equal(logged(plugin.logs, 'information', 'abort signal received; stopping'), 1);
+  await rejectsWith(invoke(plugin.client, 'probes.context'), status.UNAVAILABLE);
+  plugin.client.close();
+
+  // 启动之前就已中止的信号：握手行照写，随即收尾；没启动过，不调停止回调
+  let early = 0;
+  const aborted = await launch({
+    signal: AbortSignal.abort(),
+    hooks: {
+      stop: () => {
+        early += 1;
+        return Result.success();
+      },
+    },
+  });
+  await aborted.served;
+  assert.equal(early, 0);
+  assert.equal(logged(aborted.logs, 'information', 'abort signal received; stopping'), 1);
+  aborted.client.close();
+
+  // 正常停止之后信号再中止什么也不做：监听已经摘掉
+  const late = new AbortController();
+  const stopped = await launch({ signal: late.signal });
+  await startPlugin(stopped.client);
+  assert.equal((await stop(stopped.client)).status?.ok, true);
+  await stopped.served;
+  late.abort();
+  assert.equal(logged(stopped.logs, 'information', 'abort signal received; stopping'), 0);
+  stopped.client.close();
+});
+
+test('configure 与 start 钩子收到 { signal }：宿主取消那次调用或运行时开始收尾时中止；不收参数的钩子照常工作', async () => {
+  // 运行时开始收尾：正在执行的启动回调得到通知
+  const seen: { configure?: AbortSignal; start?: AbortSignal } = {};
+  const startEntered = gate();
+  const plugin = await launch({
+    hooks: {
+      configure: (_configuration, { signal }) => {
+        seen.configure = signal;
+        return Result.success();
+      },
+      start: async ({ signal }) => {
+        seen.start = signal;
+        startEntered.open();
+        await new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }));
+        return Result.fail(ErrorInfo.cancelled('KERNEL_CANCELLED_001', 'kernel.invocation.cancelled'));
+      },
+    },
+  });
+  await handshake(plugin.client);
+  assert.equal((await configure(plugin.client)).status?.ok, true);
+  assert.ok(seen.configure instanceof AbortSignal && !seen.configure.aborted, 'a finished hook was never cancelled');
+  const starting = start(plugin.client);
+  await startEntered.wait;
+  assert.ok(seen.start instanceof AbortSignal && !seen.start.aborted);
+  plugin.stdin.end();
+  assertFailure((await starting).status, 'KERNEL_CANCELLED_001', 'kernel.invocation.cancelled', undefined);
+  assert.ok(seen.start.aborted);
+  await plugin.served;
+  plugin.client.close();
+
+  // 宿主取消 Configure 调用：正在执行的配置回调得到通知
+  const configureEntered = gate();
+  const configureAborted = gate();
+  const cancelled = await launch({
+    hooks: {
+      configure: async (_configuration, { signal }) => {
+        configureEntered.open();
+        await new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }));
+        configureAborted.open();
+        return Result.success();
+      },
+    },
+  });
+  try {
+    await handshake(cancelled.client);
+    const call = cancelled.client.configure(
+      pb.ConfigureRequest.fromPartial({ configuration: '{}', workDirectory: '.' }),
+      sessionMetadata(),
+      () => {},
+    );
+    await configureEntered.wait;
+    call.cancel();
+    await configureAborted.wait;
+  } finally {
+    await cancelled.close();
+  }
+
+  // 不收参数的钩子照常工作
+  let started = 0;
+  const plain = await launch({
+    hooks: {
+      configure: () => Result.success(),
+      start: () => {
+        started += 1;
+        return Result.success();
+      },
+    },
+  });
+  try {
+    await startPlugin(plain.client);
+    assert.equal(started, 1);
+  } finally {
+    await plain.close();
   }
 });
