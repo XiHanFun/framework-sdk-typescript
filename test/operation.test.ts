@@ -658,11 +658,20 @@ test('取消与截止时间只经信号通知，途中的取消在 Resilience �
   // 截止时间要留够余量，保证调用在它之前进入 Resilience 阶段：慢的 CI 上冷启动的第一次调用就要几毫秒，
   // 截止时间先到会以 deadline_before_start 结束，到不了处理器
   const deadline = 100;
-  // 处理器等信号触发再往下走，截止时间一定在处理器执行途中到达，不靠固定的睡眠时长去赌
-  const untilAborted = (signal: AbortSignal) =>
-    signal.aborted
-      ? Promise.resolve()
-      : new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }));
+  // 处理器等信号触发再往下走，截止时间一定在处理器执行途中到达，不靠固定的睡眠时长去赌。
+  // AbortSignal.timeout 的定时器不阻止事件循环结束，这里又没有别的活动句柄（真实插件有 gRPC 服务器）：
+  // 等的这段时间留一个定时器撑住循环，否则 Node 22 上循环先空掉，测试运行器把没结束的用例判成取消
+  const untilAborted = async (signal: AbortSignal) => {
+    if (signal.aborted) {
+      return;
+    }
+    const keepAlive = setTimeout(() => {}, 10_000);
+    try {
+      await new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }));
+    } finally {
+      clearTimeout(keepAlive);
+    }
+  };
   const registry = new OperationRegistry();
   const contract = defineContract<{ readonly mode?: string | null }, string>({ id: 'slow.run', expose: [] });
   registry.add({
