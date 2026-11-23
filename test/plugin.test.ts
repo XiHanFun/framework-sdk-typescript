@@ -2552,3 +2552,39 @@ test('未声明的健康项同一个名字只警告一次，记过的名字有�
     await plugin.close();
   }
 });
+
+test('事件处理器可以同步返回 Result：成功、失败与同步抛出都与返回 Promise 的处理器一样（invocation.md §4）', async () => {
+  const plugin = await launch({
+    subscriptions: [
+      { topic: 'sync.ok', handler: () => Result.success() },
+      {
+        topic: 'sync.failing',
+        handler: () => Result.fail(ErrorInfo.unavailable('PROBES_UNAVAILABLE_002', 'probes.store.down')),
+      },
+      {
+        topic: 'sync.throwing',
+        handler: () => {
+          throw new TypeError('broken');
+        },
+      },
+    ],
+  });
+  try {
+    await startPlugin(plugin.client);
+    assert.equal((await deliver(plugin.client, 'sync.ok', 'probe.happened', '')).status?.ok, true);
+    assertFailure(
+      (await deliver(plugin.client, 'sync.failing', 'probe.happened', '')).status,
+      'PROBES_UNAVAILABLE_002',
+      'probes.store.down',
+      undefined,
+    );
+    assertFailure(
+      (await deliver(plugin.client, 'sync.throwing', 'probe.happened', '')).status,
+      'KERNEL_UNEXPECTED_001',
+      'kernel.invocation.unhandled_exception',
+      undefined,
+    );
+  } finally {
+    await plugin.close();
+  }
+});

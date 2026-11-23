@@ -194,12 +194,15 @@ export interface EventDelivery {
 
 /**
  * 处理一条投递的消息：可恢复失败经 Result 返回，由宿主的消息代理按重试与死信策略处理；处理器必须幂等（至少一次投递）
+ *
+ * @remarks
+ * 可以直接返回 Result，也可以返回它的 Promise
  */
 export type EventHandler = (
   context: InvocationContext,
   envelope: DeliveredEnvelope,
   delivery: EventDelivery,
-) => Promise<Result<void>>;
+) => Result<void> | Promise<Result<void>>;
 
 /**
  * 一个事件订阅与它的处理器

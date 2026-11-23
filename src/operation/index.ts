@@ -31,6 +31,7 @@ export {
   type OperationHandler,
   type OperationRegistration,
   OperationRegistry,
+  type OperationRegistryOptions,
   type OperationRequest,
   type OperationResponse,
   type OperationSchema,

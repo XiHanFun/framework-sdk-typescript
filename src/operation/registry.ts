@@ -46,8 +46,14 @@ export interface OperationResponse {
 
 /**
  * 处理一个操作：可恢复失败经 Result 返回，不抛异常；抛出的异常由调用器翻译为 `KERNEL_UNEXPECTED_001`
+ *
+ * @remarks
+ * 可以直接返回 Result，也可以返回它的 Promise：不做异步的事的处理器不必写成 `async`
  */
-export type OperationHandler<Req, Res> = (context: InvocationContext, request: Req) => Promise<Result<Res>>;
+export type OperationHandler<Req, Res> = (
+  context: InvocationContext,
+  request: Req,
+) => Result<Res> | Promise<Result<Res>>;
 
 /**
  * 一次登记
@@ -130,16 +136,41 @@ export function internalsOf(descriptor: OperationDescriptor): Internals {
 }
 
 /**
- * 操作登记表：ID 唯一，容量 {@link OperationRegistry.capacity}
+ * {@link OperationRegistry} 的选项
+ */
+export interface OperationRegistryOptions {
+  /** 容量上限，至少为 1 的整数；缺省为 {@link OperationRegistry.capacity} */
+  readonly capacity?: number;
+}
+
+/**
+ * 操作登记表：ID 唯一，容量有界（缺省 {@link OperationRegistry.capacity}）
  *
  * @remarks
  * 登记与查找都是同步的，检查与写入之间没有让出事件循环，不需要锁
  */
 export class OperationRegistry {
-  /** 登记表的容量（RFC-0011） */
+  /** 登记表的缺省容量（RFC-0011） */
   static readonly capacity = 10_000;
 
+  /** 这张登记表的容量：满了之后登记以 `KERNEL_OPERATION_002` 失败，参数 `capacity` 就是它 */
+  readonly capacity: number;
+
   readonly #descriptors = new Map<string, OperationDescriptor>();
+
+  /**
+   * 创建登记表
+   *
+   * @param options - 可给出容量；缺省为 {@link OperationRegistry.capacity}，与 .NET 的 `OperationRegistry.DefaultCapacity` 相同
+   * @throws {@link FrameworkError} 容量不是至少为 1 的整数时，码为 `PRIMITIVES_VALIDATION_001`
+   */
+  constructor(options: OperationRegistryOptions = {}) {
+    const capacity = options.capacity ?? OperationRegistry.capacity;
+    if (!Number.isSafeInteger(capacity) || capacity < 1) {
+      throw FrameworkError.invalidArgument('The capacity of an operation registry must be an integer of at least 1.');
+    }
+    this.capacity = capacity;
+  }
 
   /**
    * 登记一个操作
@@ -172,9 +203,9 @@ export class OperationRegistry {
       });
     }
     // 容量是硬上限：登记表不随插件或配置无界增长
-    if (this.#descriptors.size >= OperationRegistry.capacity) {
+    if (this.#descriptors.size >= this.capacity) {
       throw FrameworkError.fromMessage(OperationErrorCode.RegistryFull, OperationMessageKey.RegistryFull, {
-        capacity: OperationRegistry.capacity,
+        capacity: this.capacity,
       });
     }
     const descriptor = new OperationDescriptor(registration as unknown as OperationRegistration<unknown, unknown>);

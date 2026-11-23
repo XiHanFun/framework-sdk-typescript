@@ -831,3 +831,72 @@ test('按形状构建的请求', async () => {
   throwsCode(() => RequestShape.object({ a: 1 as never }), ErrorCode.InvalidArgument);
   throwsCode(() => RequestShape.custom(undefined as never), ErrorCode.InvalidArgument);
 });
+
+test('登记表的容量可以在构造时给出，缺省仍是 10000：满了按这张表的容量报 kernel.operation.registry_full', () => {
+  assert.equal(new OperationRegistry().capacity, OperationRegistry.capacity);
+  assert.equal(new OperationRegistry({}).capacity, 10_000);
+  const registry = new OperationRegistry({ capacity: 2 });
+  assert.equal(registry.capacity, 2);
+  const handler = async () => Result.ok({});
+  const request = RequestShape.object({});
+  const contract = (id: string): OperationContract => ({ id, stability: Stability.Stable, expose: [] });
+  registry.add({ contract: contract('a.list'), handler, request });
+  registry.add({ contract: contract('b.list'), handler, request });
+  assert.throws(
+    () => registry.add({ contract: contract('c.list'), handler, request }),
+    (error: unknown) => {
+      assert.ok(error instanceof FrameworkError);
+      assert.equal(error.code, OperationErrorCode.RegistryFull);
+      assert.equal(error.messageKey, OperationMessageKey.RegistryFull);
+      assert.equal(error.message, 'The operation registry has reached its capacity of 2.');
+      assert.deepEqual(error.details, { capacity: 2 });
+      return true;
+    },
+  );
+  // 重复的 ID 先于已满
+  throwsCode(() => registry.add({ contract: contract('a.list'), handler, request }), OperationErrorCode.Duplicate);
+  assert.equal(registry.size, 2);
+  assert.equal(new OperationRegistry({ capacity: 20_000 }).capacity, 20_000, 'more than the default is allowed');
+  // 容量至少是 1 的整数
+  for (const capacity of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, '5' as unknown as number]) {
+    throwsCode(() => new OperationRegistry({ capacity }), 'PRIMITIVES_VALIDATION_001');
+  }
+});
+
+test('处理器可以同步返回 Result，不必是 Promise：经管道、类型化入口与 execute 结果相同，同步抛出照样翻译成 KERNEL_UNEXPECTED_001', async () => {
+  const registry = new OperationRegistry();
+  const sync = defineContract<CreateOrder, OrderCreated>({ id: 'orders.sync', expose: [] });
+  registry.add({
+    contract: sync,
+    request: createOrderShape,
+    // 不是 async 函数：直接返回 Result
+    handler: (_context, request) =>
+      request.quantity === undefined
+        ? Result.fail(ErrorInfo.validation('ORDERS_VALIDATION_001', 'orders.quantity.invalid'))
+        : Result.ok({ id: 'o-sync', quantity: request.quantity }),
+  });
+  const throwing = defineContract<CreateOrder, OrderCreated>({ id: 'orders.throw', expose: [] });
+  registry.add({
+    contract: throwing,
+    request: createOrderShape,
+    handler: () => {
+      throw new Error('boom');
+    },
+  });
+  const invoker = new OperationInvoker(registry);
+  const response = await invoker.invoke(InvocationContext.create(), { id: 'orders.sync', payload: '{"quantity":2}' });
+  assert.ok(response.outcome.ok);
+  assert.equal(response.payload, '{"id":"o-sync","quantity":2}');
+  const typed = await invoker.invokeTyped(InvocationContext.create(), sync, { quantity: 3 });
+  assert.ok(typed.ok && typed.value.quantity === 3);
+  const failed = await invoker.invoke(InvocationContext.create(), { id: 'orders.sync' });
+  assert.equal(codeOf(failed.outcome), 'ORDERS_VALIDATION_001');
+  const executed = await registry.find('orders.sync')?.execute(InvocationContext.create(), '{"quantity":4}');
+  assert.equal(executed?.payload, '{"id":"o-sync","quantity":4}');
+  const thrown = await invoker.invoke(InvocationContext.create(), { id: 'orders.throw' });
+  assert.equal(codeOf(thrown.outcome), OperationErrorCode.Unexpected);
+  assert.equal(
+    codeOf(await invoker.invokeTyped(InvocationContext.create(), throwing, {})),
+    OperationErrorCode.Unexpected,
+  );
+});
