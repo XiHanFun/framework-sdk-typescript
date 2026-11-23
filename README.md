@@ -105,7 +105,7 @@ The documentation site is in Chinese.
 
 ## Status
 
-The maturity is Experimental: there is a prerelease pinned to a spec rc tag, and Stable also needs a release pinned to a formal spec tag. Claimed conformance profiles: `core` and `plugin` (RFC-0024); gaps: none; pinned spec version: the commit the `spec/` submodule points to. Details are on the [documentation page](https://framework.docs.xihanfun.com/sdks/typescript).
+The maturity is Experimental: there is a prerelease pinned to a spec rc tag, and Stable also needs a release pinned to a formal spec tag. Claimed conformance profiles: `core` and `plugin` (RFC-0024); gaps: none; pinned spec version: the commit the `spec/` submodule points to. Streaming operations, the Wasm carrier and the plugin side of remote Providers are not provided yet. Details are on the [documentation page](https://framework.docs.xihanfun.com/sdks/typescript).
 
 ## Ecosystem
 
