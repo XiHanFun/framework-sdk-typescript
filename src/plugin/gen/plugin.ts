@@ -211,7 +211,7 @@ export interface LocaleTemplates {
   /** 区域（BCP 47，如 `en-US`）。 */
   locale: string;
   /** 消息键 → 模板（`{name}` 占位符，可带 `:format`）。 */
-  templates: { [key: string]: string };
+  templates: Map<string, string>;
 }
 
 export interface LocaleTemplates_TemplatesEntry {
@@ -238,6 +238,17 @@ export interface Binding {
   /** 资源类型（`connection:relational`、`cache:distributed`、`queue`、`blob`）。 */
   type: string;
   /** 连接串或地址。 */
+  value: string;
+  /**
+   * 绑定的其余属性，键是属性名（区分大小写）、值是属性值；没有其余属性时为空。来源只给了属性、没有主值的绑定照常下发，
+   * `value` 为空。属性名的文法、数量与大小的上限见 lifecycle.md §2；属性值可能是凭据，宿主与插件都不得写进日志。
+   * 较早的宿主不发这个字段，较早的插件忽略它。
+   */
+  properties: Map<string, string>;
+}
+
+export interface Binding_PropertiesEntry {
+  key: string;
   value: string;
 }
 
@@ -307,7 +318,7 @@ export interface InvocationMetadata {
    * 已登记的 Baggage（`conventions/baggage-keys.md`，键名原样），未登记的键必须剥离。
    * 回调时 `xihan.tenant` 只能是宿主随调用交给插件的租户（`invocation.md` §2、§5）。
    */
-  baggage: { [key: string]: string };
+  baggage: Map<string, string>;
 }
 
 export interface InvocationMetadata_BaggageEntry {
@@ -396,7 +407,7 @@ export interface Envelope {
   /** `data`。 */
   data: Uint8Array;
   /** 扩展属性。 */
-  extensions: { [key: string]: string };
+  extensions: Map<string, string>;
 }
 
 export interface Envelope_ExtensionsEntry {
@@ -445,7 +456,7 @@ export interface MiddlewareResponse {
     | Status
     | undefined;
   /** 追加或改写的已登记 Baggage（`xihan.principal` 与 `xihan.tenant` 不可改写）；只在 `before` 有效。 */
-  baggage: { [key: string]: string };
+  baggage: Map<string, string>;
 }
 
 export interface MiddlewareResponse_BaggageEntry {
@@ -1280,7 +1291,7 @@ export const MessageCatalog: MessageFns<MessageCatalog> = {
 };
 
 function createBaseLocaleTemplates(): LocaleTemplates {
-  return { locale: "", templates: {} };
+  return { locale: "", templates: new Map() };
 }
 
 export const LocaleTemplates: MessageFns<LocaleTemplates> = {
@@ -1288,7 +1299,7 @@ export const LocaleTemplates: MessageFns<LocaleTemplates> = {
     if (message.locale !== "") {
       writer.uint32(10).string(message.locale);
     }
-    globalThis.Object.entries(message.templates).forEach(([key, value]: [string, string]) => {
+    message.templates.forEach((value, key) => {
       LocaleTemplates_TemplatesEntry.encode({ key: key as any, value }, writer.uint32(18).fork()).join();
     });
     return writer;
@@ -1322,7 +1333,7 @@ export const LocaleTemplates: MessageFns<LocaleTemplates> = {
 
             const entry2 = LocaleTemplates_TemplatesEntry.decode(reader, reader.uint32());
             if (entry2.value !== undefined) {
-              message.templates[entry2.key] = entry2.value;
+              message.templates.set(entry2.key, entry2.value);
             }
             continue;
           }
@@ -1344,15 +1355,15 @@ export const LocaleTemplates: MessageFns<LocaleTemplates> = {
   fromPartial(object: DeepPartial<LocaleTemplates>): LocaleTemplates {
     const message = createBaseLocaleTemplates();
     message.locale = object.locale ?? "";
-    message.templates = (globalThis.Object.entries(object.templates ?? {}) as [string, string][]).reduce(
-      (acc: { [key: string]: string }, [key, value]: [string, string]) => {
+    message.templates = (() => {
+      const m = new Map();
+      (object.templates as Map<string, string> ?? new Map()).forEach((value, key) => {
         if (value !== undefined) {
-          acc[key] = globalThis.String(value);
+          m.set(key, globalThis.String(value));
         }
-        return acc;
-      },
-      {},
-    );
+      });
+      return m;
+    })();
     return message;
   },
 };
@@ -1516,7 +1527,7 @@ export const ConfigureRequest: MessageFns<ConfigureRequest> = {
 };
 
 function createBaseBinding(): Binding {
-  return { name: "", type: "", value: "" };
+  return { name: "", type: "", value: "", properties: new Map() };
 }
 
 export const Binding: MessageFns<Binding> = {
@@ -1530,6 +1541,9 @@ export const Binding: MessageFns<Binding> = {
     if (message.value !== "") {
       writer.uint32(26).string(message.value);
     }
+    message.properties.forEach((value, key) => {
+      Binding_PropertiesEntry.encode({ key: key as any, value }, writer.uint32(34).fork()).join();
+    });
     return writer;
   },
 
@@ -1570,6 +1584,17 @@ export const Binding: MessageFns<Binding> = {
             message.value = reader.string();
             continue;
           }
+          case 4: {
+            if (tag !== 34) {
+              break;
+            }
+
+            const entry4 = Binding_PropertiesEntry.decode(reader, reader.uint32());
+            if (entry4.value !== undefined) {
+              message.properties.set(entry4.key, entry4.value);
+            }
+            continue;
+          }
         }
         if ((tag & 7) === 4 || tag === 0) {
           break;
@@ -1589,6 +1614,82 @@ export const Binding: MessageFns<Binding> = {
     const message = createBaseBinding();
     message.name = object.name ?? "";
     message.type = object.type ?? "";
+    message.value = object.value ?? "";
+    message.properties = (() => {
+      const m = new Map();
+      (object.properties as Map<string, string> ?? new Map()).forEach((value, key) => {
+        if (value !== undefined) {
+          m.set(key, globalThis.String(value));
+        }
+      });
+      return m;
+    })();
+    return message;
+  },
+};
+
+function createBaseBinding_PropertiesEntry(): Binding_PropertiesEntry {
+  return { key: "", value: "" };
+}
+
+export const Binding_PropertiesEntry: MessageFns<Binding_PropertiesEntry> = {
+  encode(message: Binding_PropertiesEntry, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.key !== "") {
+      writer.uint32(10).string(message.key);
+    }
+    if (message.value !== "") {
+      writer.uint32(18).string(message.value);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): Binding_PropertiesEntry {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const previousRecursionDepth = (reader as any).__tsProtoDecodeDepth ?? 0;
+    if (previousRecursionDepth >= 100) {
+      throw new globalThis.Error("protobuf decode recursion limit exceeded");
+    }
+    (reader as any).__tsProtoDecodeDepth = previousRecursionDepth + 1;
+    try {
+      const end = length === undefined ? reader.len : reader.pos + length;
+      const message = createBaseBinding_PropertiesEntry();
+      while (reader.pos < end) {
+        const tag = reader.uint32();
+        switch (tag >>> 3) {
+          case 1: {
+            if (tag !== 10) {
+              break;
+            }
+
+            message.key = reader.string();
+            continue;
+          }
+          case 2: {
+            if (tag !== 18) {
+              break;
+            }
+
+            message.value = reader.string();
+            continue;
+          }
+        }
+        if ((tag & 7) === 4 || tag === 0) {
+          break;
+        }
+        reader.skip(tag & 7);
+      }
+      return message;
+    } finally {
+      (reader as any).__tsProtoDecodeDepth = previousRecursionDepth;
+    }
+  },
+
+  create(base?: DeepPartial<Binding_PropertiesEntry>): Binding_PropertiesEntry {
+    return Binding_PropertiesEntry.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<Binding_PropertiesEntry>): Binding_PropertiesEntry {
+    const message = createBaseBinding_PropertiesEntry();
+    message.key = object.key ?? "";
     message.value = object.value ?? "";
     return message;
   },
@@ -2077,7 +2178,7 @@ export const HealthItem: MessageFns<HealthItem> = {
 };
 
 function createBaseInvocationMetadata(): InvocationMetadata {
-  return { traceParent: "", traceState: "", deadline: "", baggage: {} };
+  return { traceParent: "", traceState: "", deadline: "", baggage: new Map() };
 }
 
 export const InvocationMetadata: MessageFns<InvocationMetadata> = {
@@ -2091,7 +2192,7 @@ export const InvocationMetadata: MessageFns<InvocationMetadata> = {
     if (message.deadline !== "") {
       writer.uint32(26).string(message.deadline);
     }
-    globalThis.Object.entries(message.baggage).forEach(([key, value]: [string, string]) => {
+    message.baggage.forEach((value, key) => {
       InvocationMetadata_BaggageEntry.encode({ key: key as any, value }, writer.uint32(34).fork()).join();
     });
     return writer;
@@ -2141,7 +2242,7 @@ export const InvocationMetadata: MessageFns<InvocationMetadata> = {
 
             const entry4 = InvocationMetadata_BaggageEntry.decode(reader, reader.uint32());
             if (entry4.value !== undefined) {
-              message.baggage[entry4.key] = entry4.value;
+              message.baggage.set(entry4.key, entry4.value);
             }
             continue;
           }
@@ -2165,15 +2266,15 @@ export const InvocationMetadata: MessageFns<InvocationMetadata> = {
     message.traceParent = object.traceParent ?? "";
     message.traceState = object.traceState ?? "";
     message.deadline = object.deadline ?? "";
-    message.baggage = (globalThis.Object.entries(object.baggage ?? {}) as [string, string][]).reduce(
-      (acc: { [key: string]: string }, [key, value]: [string, string]) => {
+    message.baggage = (() => {
+      const m = new Map();
+      (object.baggage as Map<string, string> ?? new Map()).forEach((value, key) => {
         if (value !== undefined) {
-          acc[key] = globalThis.String(value);
+          m.set(key, globalThis.String(value));
         }
-        return acc;
-      },
-      {},
-    );
+      });
+      return m;
+    })();
     return message;
   },
 };
@@ -2639,7 +2740,7 @@ function createBaseEnvelope(): Envelope {
     time: "",
     dataContentType: "",
     data: new Uint8Array(0),
-    extensions: {},
+    extensions: new Map(),
   };
 }
 
@@ -2672,7 +2773,7 @@ export const Envelope: MessageFns<Envelope> = {
     if (message.data.length !== 0) {
       writer.uint32(74).bytes(message.data);
     }
-    globalThis.Object.entries(message.extensions).forEach(([key, value]: [string, string]) => {
+    message.extensions.forEach((value, key) => {
       Envelope_ExtensionsEntry.encode({ key: key as any, value }, writer.uint32(82).fork()).join();
     });
     return writer;
@@ -2770,7 +2871,7 @@ export const Envelope: MessageFns<Envelope> = {
 
             const entry10 = Envelope_ExtensionsEntry.decode(reader, reader.uint32());
             if (entry10.value !== undefined) {
-              message.extensions[entry10.key] = entry10.value;
+              message.extensions.set(entry10.key, entry10.value);
             }
             continue;
           }
@@ -2800,15 +2901,15 @@ export const Envelope: MessageFns<Envelope> = {
     message.time = object.time ?? "";
     message.dataContentType = object.dataContentType ?? "";
     message.data = object.data ?? new Uint8Array(0);
-    message.extensions = (globalThis.Object.entries(object.extensions ?? {}) as [string, string][]).reduce(
-      (acc: { [key: string]: string }, [key, value]: [string, string]) => {
+    message.extensions = (() => {
+      const m = new Map();
+      (object.extensions as Map<string, string> ?? new Map()).forEach((value, key) => {
         if (value !== undefined) {
-          acc[key] = globalThis.String(value);
+          m.set(key, globalThis.String(value));
         }
-        return acc;
-      },
-      {},
-    );
+      });
+      return m;
+    })();
     return message;
   },
 };
@@ -3124,7 +3225,7 @@ export const MiddlewareRequest: MessageFns<MiddlewareRequest> = {
 };
 
 function createBaseMiddlewareResponse(): MiddlewareResponse {
-  return { action: 0, outcome: undefined, baggage: {} };
+  return { action: 0, outcome: undefined, baggage: new Map() };
 }
 
 export const MiddlewareResponse: MessageFns<MiddlewareResponse> = {
@@ -3135,7 +3236,7 @@ export const MiddlewareResponse: MessageFns<MiddlewareResponse> = {
     if (message.outcome !== undefined) {
       Status.encode(message.outcome, writer.uint32(18).fork()).join();
     }
-    globalThis.Object.entries(message.baggage).forEach(([key, value]: [string, string]) => {
+    message.baggage.forEach((value, key) => {
       MiddlewareResponse_BaggageEntry.encode({ key: key as any, value }, writer.uint32(26).fork()).join();
     });
     return writer;
@@ -3177,7 +3278,7 @@ export const MiddlewareResponse: MessageFns<MiddlewareResponse> = {
 
             const entry3 = MiddlewareResponse_BaggageEntry.decode(reader, reader.uint32());
             if (entry3.value !== undefined) {
-              message.baggage[entry3.key] = entry3.value;
+              message.baggage.set(entry3.key, entry3.value);
             }
             continue;
           }
@@ -3202,15 +3303,15 @@ export const MiddlewareResponse: MessageFns<MiddlewareResponse> = {
     message.outcome = (object.outcome !== undefined && object.outcome !== null)
       ? Status.fromPartial(object.outcome)
       : undefined;
-    message.baggage = (globalThis.Object.entries(object.baggage ?? {}) as [string, string][]).reduce(
-      (acc: { [key: string]: string }, [key, value]: [string, string]) => {
+    message.baggage = (() => {
+      const m = new Map();
+      (object.baggage as Map<string, string> ?? new Map()).forEach((value, key) => {
         if (value !== undefined) {
-          acc[key] = globalThis.String(value);
+          m.set(key, globalThis.String(value));
         }
-        return acc;
-      },
-      {},
-    );
+      });
+      return m;
+    })();
     return message;
   },
 };

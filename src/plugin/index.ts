@@ -11,6 +11,7 @@
  * @packageDocumentation
  */
 
+export type { PluginBinding } from './binding.ts';
 export { loadCatalog, type PluginCatalog } from './catalog.ts';
 export { ConfigurationSection } from './configuration.ts';
 export type { DeliveredEnvelope, Envelope } from './conversion.ts';
@@ -40,7 +41,6 @@ export {
   type EventDelivery,
   type EventHandler,
   HealthStatus,
-  type PluginBinding,
   type PluginConfiguration,
   type PluginHealth,
   type PluginHealthItem,

@@ -219,7 +219,7 @@ export function contextFromMetadata(
   callDeadline: number | undefined,
 ): InvocationContext {
   const baggage: Record<string, string> = {};
-  for (const [key, value] of Object.entries(metadata?.baggage ?? {})) {
+  for (const [key, value] of metadata?.baggage ?? []) {
     if (isBaggageKeyRegistered(key) && typeof value === 'string') {
       baggage[key] = value;
     }
@@ -247,7 +247,7 @@ export function metadataFromContext(context: InvocationContext): pb.InvocationMe
     traceParent: context.traceParent,
     traceState: '',
     deadline: context.deadline === undefined ? '' : formatDeadline(context.deadline),
-    baggage: { ...context.withoutUnregisteredBaggage().baggage },
+    baggage: new Map(Object.entries(context.withoutUnregisteredBaggage().baggage)),
   };
 }
 
@@ -305,7 +305,7 @@ export function toProtoEnvelope(envelope: Envelope): pb.Envelope {
     time: envelope.time ?? '',
     dataContentType: envelope.dataContentType || 'application/json',
     data: toBytes(envelope.data),
-    extensions: { ...envelope.extensions },
+    extensions: new Map(Object.entries(envelope.extensions ?? {})),
   };
 }
 
@@ -315,6 +315,10 @@ export function toProtoEnvelope(envelope: Envelope): pb.Envelope {
  * @internal
  */
 export function fromProtoEnvelope(envelope: pb.Envelope): DeliveredEnvelope {
+  const extensions: Record<string, string> = {};
+  for (const [name, value] of envelope.extensions) {
+    extensions[name] = value;
+  }
   return Object.freeze({
     topic: envelope.topic,
     id: envelope.id,
@@ -325,7 +329,7 @@ export function fromProtoEnvelope(envelope: pb.Envelope): DeliveredEnvelope {
     time: envelope.time,
     dataContentType: envelope.dataContentType,
     data: envelope.data,
-    extensions: Object.freeze({ ...envelope.extensions }),
+    extensions: Object.freeze(extensions),
   });
 }
 

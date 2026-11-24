@@ -23,6 +23,7 @@ const replayed: readonly string[] = [
   'manifest/manifests.json', // manifest.test.ts
   'operations/payload-reasons.json', // operation.test.ts
   'pipeline/ordering.json', // pipeline.test.ts
+  'plugin/binding-properties.json', // plugin.test.ts（reading；names、limits、delivery 与 json 是宿主一侧的）
   'plugin/callback-status.json', // plugin.test.ts
   'plugin/deadlines.json', // plugin.test.ts
   'plugin/error-reading.json', // plugin.test.ts

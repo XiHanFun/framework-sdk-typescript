@@ -6,6 +6,7 @@ import { dirname, join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { format, inspect } from 'node:util';
 
 import {
   type ClientReadableStream,
@@ -31,6 +32,7 @@ import {
   type LogTarget,
   loadCatalog,
   negotiateProtocolVersion,
+  type PluginConfiguration,
   type PluginEndpoint,
   PluginErrorCode,
   type PluginHealth,
@@ -853,7 +855,10 @@ test('握手交出清单的 primitives、去掉 BOM 的清单原文、一元操�
     ]);
     // 只有作者的目录：SDK 运行时的 plugins.* 不随握手发送
     assert.deepEqual(response.catalogs, [
-      { name: 'probes', locales: [{ locale: 'en-US', templates: { 'probes.value.invalid': 'At least {min}.' } }] },
+      {
+        name: 'probes',
+        locales: [{ locale: 'en-US', templates: new Map([['probes.value.invalid', 'At least {min}.']]) }],
+      },
     ]);
   } finally {
     await plugin.close();
@@ -999,8 +1004,211 @@ test('Configure 把配置节、类型化读取、权限、绑定与工作目录�
     assert.ok(seen.values instanceof ConfigurationSection);
     assert.equal(seen.text, '{}');
     assert.deepEqual(seen.grantedPermissions, [CallbackPermission.Invoke]);
-    assert.deepEqual(seen.bindings, [{ name: 'cache', type: 'cache:distributed', value: 'redis:6379' }]);
+    // 请求里没有 properties（按较早的规范实现的宿主不发）：属性是空表，不是没有这个成员
+    assert.deepEqual(seen.bindings, [
+      { name: 'cache', type: 'cache:distributed', value: 'redis:6379', properties: new Map() },
+    ]);
     assert.equal(seen.workDirectory, '/var/lib/probe');
+  } finally {
+    await plugin.close();
+  }
+});
+
+/** 启动一个记下配置回调参数的测试插件并握手 */
+async function launchConfigurable(): Promise<{ plugin: Launched; seen: () => PluginConfiguration | undefined }> {
+  let seen: PluginConfiguration | undefined;
+  const plugin = await launch({
+    hooks: {
+      configure: (configuration) => {
+        seen = configuration;
+        return Result.success();
+      },
+    },
+  });
+  await handshake(plugin.client);
+  return { plugin, seen: () => seen };
+}
+
+/** Configure，请求是给定的字节原样：不经本 SDK 的编码，插件一侧用生成的 ConfigureRequest 解码 */
+function configureBytes(client: pb.PluginClient, bytes: Uint8Array): Promise<pb.ConfigureResponse> {
+  const method = pb.PluginService.configure;
+  return unary<pb.ConfigureResponse>((done) =>
+    client.makeUnaryRequest(
+      method.path,
+      (value: Uint8Array) => Buffer.from(value),
+      method.responseDeserialize,
+      bytes,
+      sessionMetadata(),
+      // 没有错误时总有响应：缺了就按空的响应处理，下面对 status 的断言会失败
+      (error, value) => done(error, value ?? pb.ConfigureResponse.create()),
+    ),
+  );
+}
+
+test('Configure 交出的绑定连同属性遵循 binding-properties.json 的 reading：宿主写出的字节原样进来（lifecycle.md §7.2）', async () => {
+  const vectors = vector<{
+    reading: {
+      name: string;
+      hex: string;
+      bindings: { name: string; type: string; value: string; properties: Record<string, string> }[];
+    }[];
+  }>('binding-properties.json');
+  assert.ok(vectors.reading.length > 0);
+  for (const entry of vectors.reading) {
+    const { plugin, seen } = await launchConfigurable();
+    try {
+      const bytes = Buffer.from(entry.hex, 'hex');
+      assert.equal(bytes.length * 2, entry.hex.length, entry.name);
+      // 生成的消息类型读得出这些字节，绑定的个数与先后和期望的相同
+      assert.deepEqual(
+        pb.ConfigureRequest.decode(bytes).bindings.map((binding) => binding.name),
+        entry.bindings.map((binding) => binding.name),
+        entry.name,
+      );
+      assert.equal((await configureBytes(plugin.client, bytes)).status?.ok, true, entry.name);
+      // 绑定按先后逐项比较；属性表按属性名比较，各项的先后没有含义
+      assert.deepEqual(
+        seen()?.bindings,
+        entry.bindings.map((binding) => ({
+          name: binding.name,
+          type: binding.type,
+          value: binding.value,
+          properties: new Map(Object.entries(binding.properties)),
+        })),
+        entry.name,
+      );
+    } finally {
+      await plugin.close();
+    }
+  }
+});
+
+test('绑定的属性原样交出：属性名区分大小写、__proto__ 这样的名字不丢，不核对文法与上限，交出的是冻结的拷贝（lifecycle.md §7.2）', async () => {
+  // 属性名里有对象原型上的名字、只差大小写的两项、纯数字的名字、不合下发文法的名字与空值
+  const odd = new Map([
+    ['__proto__', 'proto'],
+    ['constructor', 'ctor'],
+    ['toString', 'text'],
+    ['hasOwnProperty', 'own'],
+    ['accessKey', 'lower'],
+    ['AccessKey', 'upper'],
+    ['8080', 'digits'],
+    ['.hidden', 'dot'],
+    ['user name', 'space'],
+    ['empty', ''],
+  ]);
+  // 超过宿主一侧的上限（64 个属性、名字 253 个字符）：那是宿主的事，SDK 照交
+  const many = new Map<string, string>(Array.from({ length: 100 }, (_, index) => [`p${index}`, String(index)]));
+  many.set('n'.repeat(300), 'long');
+  const request = pb.ConfigureRequest.fromPartial({
+    configuration: '{}',
+    bindings: [
+      { name: 'db', type: 'connection:relational', value: '', properties: odd },
+      { name: 'many', type: 'queue', value: 'amqp://mq.internal', properties: many },
+    ],
+  });
+  const { plugin, seen } = await launchConfigurable();
+  try {
+    const configured = await unary<pb.ConfigureResponse>((done) =>
+      plugin.client.configure(request, sessionMetadata(), done),
+    );
+    // 主值为空不是错误
+    assert.equal(configured.status?.ok, true);
+    const bindings = seen()?.bindings ?? [];
+    assert.deepEqual(bindings, [
+      { name: 'db', type: 'connection:relational', value: '', properties: odd },
+      { name: 'many', type: 'queue', value: 'amqp://mq.internal', properties: many },
+    ]);
+    const [db] = bindings;
+    assert.ok(db !== undefined);
+    assert.equal(db.properties.size, odd.size);
+    assert.equal(db.properties.get('__proto__'), 'proto');
+    assert.equal(db.properties.get('accessKey'), 'lower');
+    assert.equal(db.properties.get('AccessKey'), 'upper');
+    assert.equal(db.properties.get('accesskey'), undefined);
+    assert.equal(db.properties.get('empty'), '');
+    assert.equal(db.properties.has('missing'), false);
+    // 交出的是冻结的对象与一份拷贝：作者改不动绑定，改自己手里的表也不影响别处
+    assert.ok(Object.isFrozen(bindings));
+    assert.ok(Object.isFrozen(db));
+    assert.notEqual(db.properties, odd);
+    // 展开得到的只有四个成员：调试出口不可枚举，不混进拷贝与逐成员的比较
+    assert.deepEqual(Object.keys(db), ['name', 'type', 'value', 'properties']);
+  } finally {
+    await plugin.close();
+  }
+});
+
+test('绑定的调试出口只带绑定名、类型与属性名，不带主值与属性值，运行时的日志也不带（lifecycle.md §7.2）', async () => {
+  const secrets = ['postgres://app:hunter2@db.internal/app', 'app-user-7f3a', 's3cret-9d1c'];
+  const [value = '', username = '', password = ''] = secrets;
+  const request = pb.ConfigureRequest.fromPartial({
+    configuration: '{}',
+    bindings: [
+      {
+        name: 'db',
+        type: 'connection:relational',
+        value,
+        properties: new Map([
+          ['username', username],
+          ['password', password],
+        ]),
+      },
+    ],
+  });
+  const { plugin, seen } = await launchConfigurable();
+  try {
+    assert.equal(
+      (await unary<pb.ConfigureResponse>((done) => plugin.client.configure(request, sessionMetadata(), done))).status
+        ?.ok,
+      true,
+    );
+    const configuration = seen();
+    const [binding] = configuration?.bindings ?? [];
+    assert.ok(configuration !== undefined && binding !== undefined);
+    // 作者照常读得到值
+    assert.equal(binding.value, value);
+    assert.equal(binding.properties.get('password'), password);
+
+    const lines: string[] = [];
+    const logger = new PluginLogger({ write: (text: string) => lines.push(text) });
+    logger.information('configured', { binding, bindings: configuration.bindings });
+    const outputs: Record<string, string> = {
+      'JSON.stringify(binding)': JSON.stringify(binding),
+      'JSON.stringify(configuration)': JSON.stringify(configuration),
+      'writeJson(binding)': writeJson(binding),
+      'String(binding)': String(binding),
+      'template literal': `${binding}`,
+      'inspect(binding)': inspect(binding),
+      'inspect(binding, colors)': inspect(binding, { colors: true }),
+      'inspect(configuration)': inspect(configuration),
+      'inspect(configuration, depth: null, showHidden)': inspect(configuration, { depth: null, showHidden: true }),
+      'format(%s %o %O %j)': format('%s %o %O %j', binding, binding, binding, binding),
+      PluginLogger: lines.join(''),
+      'runtime logs': plugin.logs.join(''),
+    };
+    for (const [exit, text] of Object.entries(outputs)) {
+      for (const secret of secrets) {
+        assert.ok(!text.includes(secret), `${exit} must not carry '${secret}': ${text}`);
+      }
+    }
+    // 绑定名、类型与属性名都在
+    for (const exit of ['JSON.stringify(binding)', 'String(binding)', 'inspect(binding)', 'inspect(configuration)']) {
+      for (const expected of ['db', 'connection:relational', 'username', 'password']) {
+        assert.ok(outputs[exit]?.includes(expected), `${exit} must carry '${expected}': ${outputs[exit]}`);
+      }
+    }
+    assert.equal(
+      outputs['JSON.stringify(binding)'],
+      '{"name":"db","type":"connection:relational","propertyNames":["username","password"]}',
+    );
+    assert.equal(outputs['String(binding)'], `PluginBinding(${outputs['JSON.stringify(binding)']})`);
+    assert.equal(
+      inspect(binding, { breakLength: Number.POSITIVE_INFINITY }),
+      "PluginBinding { name: 'db', type: 'connection:relational', propertyNames: [ 'username', 'password' ] }",
+    );
+    // 层数用完时只写一个记号
+    assert.equal(inspect([binding], { depth: 0 }), '[ [PluginBinding] ]');
   } finally {
     await plugin.close();
   }
@@ -1194,13 +1402,13 @@ test('调用上下文：trace_parent 按文法取、trace_state 不进上下文�
       traceParent: '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-00',
       traceState: 'vendor=1',
       deadline: text,
-      baggage: {
-        [BaggageKey.Tenant]: 't1',
-        [BaggageKey.Principal]: 'u1',
-        [BaggageKey.Correlation]: 'bad\nvalue',
-        'xihan.unregistered': 'dropped',
-        other: 'dropped',
-      },
+      baggage: new Map([
+        [BaggageKey.Tenant, 't1'],
+        [BaggageKey.Principal, 'u1'],
+        [BaggageKey.Correlation, 'bad\nvalue'],
+        ['xihan.unregistered', 'dropped'],
+        ['other', 'dropped'],
+      ]),
     });
     const seen = payloadOf(response) as Record<string, unknown>;
     assert.equal(seen.tenant, 't1');
@@ -1825,7 +2033,11 @@ test('回调带会话令牌与调用上下文的元数据：traceparent、七位
       traceParent: '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01',
       traceState: 'vendor=1',
       deadline: formatDeadline(deadline),
-      baggage: { [BaggageKey.Tenant]: 't1', [BaggageKey.Correlation]: 'c1', 'xihan.unregistered': 'x' },
+      baggage: new Map([
+        [BaggageKey.Tenant, 't1'],
+        [BaggageKey.Correlation, 'c1'],
+        ['xihan.unregistered', 'x'],
+      ]),
     });
     assert.equal(relayed.status?.ok, true, JSON.stringify(relayed.status));
     assert.deepEqual(payloadOf(relayed), { id: 'o-1' });
@@ -1838,7 +2050,13 @@ test('回调带会话令牌与调用上下文的元数据：traceparent、七位
     assert.equal(request.metadata?.traceState, '');
     assert.equal(request.metadata?.deadline, formatDeadline(deadline));
     assert.match(request.metadata?.deadline ?? '', /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{7}\+00:00$/);
-    assert.deepEqual(request.metadata?.baggage, { [BaggageKey.Correlation]: 'c1', [BaggageKey.Tenant]: 't1' });
+    assert.deepEqual(
+      request.metadata?.baggage,
+      new Map([
+        [BaggageKey.Correlation, 'c1'],
+        [BaggageKey.Tenant, 't1'],
+      ]),
+    );
     const grpcDeadline = received?.deadline;
     const grpcMilliseconds = grpcDeadline instanceof Date ? grpcDeadline.getTime() : Number(grpcDeadline);
     assert.ok(Math.abs(grpcMilliseconds - deadline) < 50, `${grpcMilliseconds} ${deadline}`);
@@ -1884,7 +2102,7 @@ test('回调的本地核对按宿主的顺序：权限要声明且授予，租�
   const plugin = await launch({}, { XIHAN_PLUGIN_HOST_ADDRESS: host.address });
   try {
     await startPlugin(plugin.client);
-    await invoke(plugin.client, 'probes.context', '{}', { baggage: { [BaggageKey.Tenant]: 't1' } });
+    await invoke(plugin.client, 'probes.context', '{}', { baggage: new Map([[BaggageKey.Tenant, 't1']]) });
     const context = plugin.probe.lastContext as InvocationContext;
     const callback = findHost(context);
     assert.ok(callback !== undefined);
@@ -1904,19 +2122,23 @@ test('回调的本地核对按宿主的顺序：权限要声明且授予，租�
 
     // 信封的 xihantenant 不在本地核对：全部发给宿主逐项判定
     const published = await invoke(plugin.client, 'probes.publish', '{"tenants":["t1",null,"t9"]}', {
-      baggage: { [BaggageKey.Tenant]: 't1' },
+      baggage: new Map([[BaggageKey.Tenant, 't1']]),
     });
     assert.deepEqual(payloadOf(published), ['ok', 'ok', 'ok']);
     const publish = host.received.at(-1)?.request as pb.PublishRequest;
     assert.deepEqual(
-      publish.envelopes.map((envelope) => [envelope.id, envelope.specVersion, envelope.extensions.xihantenant ?? '']),
+      publish.envelopes.map((envelope) => [
+        envelope.id,
+        envelope.specVersion,
+        envelope.extensions.get('xihantenant') ?? '',
+      ]),
       [
         ['e-0', '1.0', 't1'],
         ['e-1', '1.0', ''],
         ['e-2', '1.0', 't9'],
       ],
     );
-    assert.equal(publish.metadata?.baggage[BaggageKey.Tenant], 't1');
+    assert.equal(publish.metadata?.baggage.get(BaggageKey.Tenant), 't1');
   } finally {
     await plugin.close();
     host.close();

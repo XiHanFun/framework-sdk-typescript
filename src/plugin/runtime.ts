@@ -37,6 +37,7 @@ import {
   toJsonValue,
   writeJson,
 } from '../primitives/index.ts';
+import { deliveredBinding, type PluginBinding } from './binding.ts';
 import { checkCatalog, type PluginCatalog } from './catalog.ts';
 import { ConfigurationSection } from './configuration.ts';
 import {
@@ -112,18 +113,6 @@ export interface PluginHealth {
 }
 
 /**
- * 一个已解析的资源绑定
- */
-export interface PluginBinding {
-  /** 绑定名 */
-  readonly name: string;
-  /** 资源类型，如 `connection:relational` */
-  readonly type: string;
-  /** 连接串或地址 */
-  readonly value: string;
-}
-
-/**
  * `Configure` 下发的内容（plugin/lifecycle.md §2、§7.2）
  */
 export interface PluginConfiguration {
@@ -135,7 +124,7 @@ export interface PluginConfiguration {
   readonly text: string;
   /** 宿主授予的权限，原样；回调前的权限核对以它为准（invocation.md §5） */
   readonly grantedPermissions: readonly string[];
-  /** 已解析的资源绑定：只含清单声明的 */
+  /** 已解析的资源绑定连同属性，按宿主下发的先后：只含清单声明的；主值与属性值可能是凭据，不要写进日志 */
   readonly bindings: readonly PluginBinding[];
   /** 宿主为插件分配的可写工作目录 */
   readonly workDirectory: string;
@@ -776,7 +765,7 @@ class PluginRuntime {
         name: catalog.name,
         locales: Object.entries(catalog.locales).map(([locale, templates]) => ({
           locale,
-          templates: { ...templates },
+          templates: new Map(Object.entries(templates)),
         })),
       })),
     };
@@ -811,7 +800,12 @@ class PluginRuntime {
         values: new ConfigurationSection(section),
         text,
         grantedPermissions: Object.freeze([...request.grantedPermissions]),
-        bindings: Object.freeze(request.bindings.map((binding) => Object.freeze({ ...binding }))),
+        // 绑定连同属性原样交出：不折叠属性名的大小写、不核对文法与上限，主值为空也不是错误（lifecycle.md §7.2）
+        bindings: Object.freeze(
+          request.bindings.map((binding) =>
+            deliveredBinding(binding.name, binding.type, binding.value, binding.properties),
+          ),
+        ),
         workDirectory: request.workDirectory,
       });
       const hook = this.#options.hooks?.configure;

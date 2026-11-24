@@ -12,6 +12,9 @@ plugins:
       - enumsAsLiterals=true
       # 协议的 JSON 映射用不到：业务载荷本来就是 JSON 文本
       - outputJsonMethods=false
+      # map 字段生成 Map 而不是普通对象：普通对象解码时给 __proto__ 赋字符串是空操作，这个键会丢，
+      # 而它是合文法的绑定属性名（plugin/lifecycle.md §2）
+      - useMapType=true
       - useExactTypes=false
       - esModuleInterop=true
       - importSuffix=.js
