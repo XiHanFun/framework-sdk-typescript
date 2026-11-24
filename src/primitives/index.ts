@@ -84,7 +84,7 @@ export {
   tryFormatMessage,
   validateMessageKey,
 } from './messages.ts';
-export { isOperationId, validateOperationId } from './operation-id.ts';
+export { isOperationId, maxOperationIdLength, validateOperationId } from './operation-id.ts';
 export { Fail, Ok, Result, ResultBase, type ResultJson } from './result.ts';
 export { isStability, Stability, stabilities, stabilityOrdinal } from './stability.ts';
 export { isPipelineStage, PipelineStage, pipelineStageOrdinal, pipelineStages } from './stage.ts';

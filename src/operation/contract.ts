@@ -1,4 +1,4 @@
-import { FrameworkError, isOperationId, isStability, Stability } from '../primitives/index.ts';
+import { FrameworkError, isStability, Stability, validateOperationId } from '../primitives/index.ts';
 
 /**
  * 内核登记的操作错误码
@@ -129,10 +129,8 @@ export function checkContract(contract: OperationContract): void {
   if (typeof contract !== 'object' || contract === null) {
     throw FrameworkError.invalidArgument('An operation contract must be an object.');
   }
-  const { id } = contract;
-  if (typeof id !== 'string' || !isOperationId(id)) {
-    throw FrameworkError.invalidArgument(`The operation ID '${id}' must match <resource>.<verb>.`);
-  }
+  // 契约的 ID 与清单的 contributes.operations 是同一条规则（文法加 128 个字符的上限），校验与消息都取原语层的
+  const id = validateOperationId(contract.id);
   if (contract.permission !== undefined && contract.policy !== undefined) {
     throw FrameworkError.invalidArgument(`The operation '${id}' must declare either a permission or a policy.`);
   }

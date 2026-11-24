@@ -17,7 +17,7 @@ CI 矩阵：`ubuntu-latest` 与 `windows-latest`，Node 24，外加 `ubuntu-late
 
 | 文件 | 覆盖 |
 | --- | --- |
-| `test/primitives.test.ts` | 原语：错误码、Baggage 键、生命周期迁移、管道阶段、错误与细节、JSON 文本、线上编码、模板与消息目录 |
+| `test/primitives.test.ts` | 原语：错误码、操作 ID、Baggage 键、生命周期迁移、管道阶段、错误与细节、JSON 文本、线上编码、模板与消息目录 |
 | `test/manifest.test.ts` | 清单的读取、写出、能力依赖文法 |
 | `test/invocation.test.ts` | 调用上下文：追踪、Baggage、截止时间与取消的归因 |
 | `test/pipeline.test.ts` | 管道的登记、排序与错误 |

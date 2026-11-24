@@ -1,12 +1,12 @@
 /**
- * 换算成 UTC 之后（不计小数）允许的最早时刻：0001-01-01T00:00:00（invocation.md §2）
+ * 换算成 UTC 之后（不计小数）允许的最早时刻：0001-01-01T00:00:00（RFC-0003 规则 8）
  *
  * @internal
  */
 export const minDeadline = -62_135_596_800_000;
 
 /**
- * 换算成 UTC 之后（不计小数）允许的最晚时刻：9999-12-31T23:59:59（invocation.md §2）
+ * 换算成 UTC 之后（不计小数）允许的最晚时刻：9999-12-31T23:59:59（RFC-0003 规则 8）
  *
  * @internal
  */
@@ -16,7 +16,7 @@ export const maxDeadline = 253_402_300_799_000;
 const tailPattern = /^(?:\.([0-9]{1,9}))?(?:([Zz])|([+-])([0-9]{2}):([0-9]{2}))$/;
 
 /**
- * 按 invocation.md §2 的文法严格读 `InvocationMetadata.deadline`，返回 UTC 的 Unix 毫秒；读不出（含空串）时为 `undefined`
+ * 按截止时间文本的文法（RFC-0003 规则 8）严格读 `InvocationMetadata.deadline`，返回 UTC 的 Unix 毫秒；读不出（含空串）时为 `undefined`
  *
  * @remarks
  * 文法 `^[0-9]{4}-[0-9]{2}-[0-9]{2}[Tt][0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]{1,9})?([Zz]|[+-][0-9]{2}:[0-9]{2})\z`：

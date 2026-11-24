@@ -4,11 +4,11 @@
 
 | 模块 | 子路径 | 规范 | 回放的向量（`spec/conformance/vectors/`） | 测试 |
 | --- | --- | --- | --- | --- |
-| `src/primitives` | `xihan-framework/primitives` | RFC-0001、RFC-0010「模板」与消息键、`conventions/error-codes.md`、`conventions/baggage-keys.md` | `primitives/error-codes.json`、`baggage-keys.json`、`json-text.json`、`kernel-messages.json`、`lifecycle-transitions.json`、`message-templates.json`、`wire-encoding.json` | `test/primitives.test.ts` |
+| `src/primitives` | `xihan-framework/primitives` | RFC-0001、RFC-0010「模板」与消息键、`conventions/error-codes.md`、`conventions/baggage-keys.md`、`conventions/operation-ids.md` | `primitives/error-codes.json`、`baggage-keys.json`、`json-text.json`、`kernel-messages.json`、`lifecycle-transitions.json`、`message-templates.json`、`operation-ids.json`、`wire-encoding.json` | `test/primitives.test.ts` |
 | `src/manifest` | `xihan-framework/manifest`、`xihan-framework/manifest/node` | RFC-0002、`manifest/manifest.schema.json`、`conventions/capability-ids.md` | `manifest/manifests.json`、`primitives/capability-requirements.json` | `test/manifest.test.ts` |
 | `src/invocation` | `xihan-framework/invocation` | RFC-0003、`conventions/baggage-keys.md` | `primitives/trace-context.json`、`baggage-keys.json` | `test/invocation.test.ts` |
 | `src/pipeline` | `xihan-framework/pipeline` | RFC-0004 | `pipeline/ordering.json` | `test/pipeline.test.ts` |
-| `src/operation` | `xihan-framework/operation` | RFC-0011、`conventions/operation-ids.md` | `operations/payload-reasons.json` | `test/operation.test.ts` |
+| `src/operation` | `xihan-framework/operation` | RFC-0011、`conventions/operation-ids.md` | `operations/payload-reasons.json`、`primitives/operation-ids.json` | `test/operation.test.ts` |
 | `src/plugin` | `xihan-framework/plugin` | RFC-0017、`plugin/` | 见 plugin-runtime 技能 | `test/plugin.test.ts`、`test/plugin-conformance.test.ts` |
 
 确切的回放清单以 `test/conformance-vectors.test.ts` 的 `replayed`（行尾注释是回放它的测试文件）为准；认领的档要求哪些向量以 `spec/conformance/profiles.json` 为准。

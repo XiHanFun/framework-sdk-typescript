@@ -4,14 +4,23 @@ import { FrameworkError } from './framework.ts';
 const operationIdPattern = /^[a-z][a-z0-9]*(-[a-z0-9]+)*\.[a-z][a-z0-9]*(-[a-z0-9]+)*$/;
 
 /**
- * 判断操作 ID 是否符合 `<resource>.<verb>`
+ * 操作 ID 的最大长度（conventions/operation-ids.md、RFC-0011「操作 ID」，与 .NET 的 `OperationId.MaxLength` 相同）
+ *
+ * @remarks
+ * 文法只含 ASCII 字符，字符数、UTF-16 码元数与 UTF-8 字节数是同一个数（ADR-0276）
+ */
+export const maxOperationIdLength = 128;
+
+/**
+ * 判断操作 ID 是否符合 `<resource>.<verb>` 且不超过 {@link maxOperationIdLength} 个字符
  *
  * @remarks
  * 资源与动词都是小写字母开头、连字符分隔的小写字母数字段，中间一个点（conventions/operation-ids.md）。
- * 操作契约与清单的 `contributes.operations` 共用这一个文法
+ * 操作契约与清单的 `contributes.operations` 共用这一条规则：超过上限的 ID 别处都合文法也不合法
  */
 export function isOperationId(id: string): boolean {
-  return operationIdPattern.test(id);
+  // 先看长度：超长的输入不必交给正则
+  return id.length <= maxOperationIdLength && operationIdPattern.test(id);
 }
 
 /**
@@ -21,7 +30,9 @@ export function isOperationId(id: string): boolean {
  */
 export function validateOperationId(id: string): string {
   if (typeof id !== 'string' || !isOperationId(id)) {
-    throw FrameworkError.invalidArgument(`The operation ID '${id}' must match <resource>.<verb>.`);
+    throw FrameworkError.invalidArgument(
+      `The operation ID '${id}' must match <resource>.<verb> and be at most ${maxOperationIdLength} characters long.`,
+    );
   }
   return id;
 }

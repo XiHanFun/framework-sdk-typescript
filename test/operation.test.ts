@@ -394,6 +394,35 @@ test('登记表拒绝重复、不合法的 ID 与契约', () => {
   assert.ok(!isOperationId('orders.list-'));
 });
 
+test('契约与登记表按 operation-ids.json 收操作 ID：文法与 128 个字符的上限', () => {
+  const url = new URL('../spec/conformance/vectors/primitives/operation-ids.json', import.meta.url);
+  const vectors = JSON.parse(readFileSync(url, 'utf8')) as { maxLength: number; valid: string[]; invalid: string[] };
+  assert.ok(vectors.valid.length > 0 && vectors.invalid.length > 0);
+  const handler = async () => Result.ok({});
+  const request = RequestShape.object({});
+  const registry = new OperationRegistry();
+  for (const id of vectors.valid) {
+    assert.equal(defineContract({ id, expose: [] }).id, id);
+    registry.add({ contract: { id, stability: Stability.Stable, expose: [] }, handler, request });
+  }
+  assert.equal(registry.size, vectors.valid.length);
+  for (const id of vectors.invalid) {
+    const message = `The operation ID '${id}' must match <resource>.<verb> and be at most ${vectors.maxLength} characters long.`;
+    assert.throws(
+      () => defineContract({ id, expose: [] }),
+      (error: unknown) =>
+        error instanceof FrameworkError && error.code === ErrorCode.InvalidArgument && error.message === message,
+      JSON.stringify(id),
+    );
+    // 不经 defineContract、直接写成对象的契约在登记时照同一条规则核对
+    throwsCode(
+      () => registry.add({ contract: { id, stability: Stability.Stable, expose: [] }, handler, request }),
+      ErrorCode.InvalidArgument,
+    );
+  }
+  assert.equal(registry.size, vectors.valid.length, 'rejected registrations are not kept');
+});
+
 test('登记表容量 10000，按 ID 升序列出', () => {
   assert.equal(OperationRegistry.capacity, 10_000);
   const registry = new OperationRegistry();

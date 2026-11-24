@@ -11,7 +11,7 @@
 | `src/plugin/session.ts` | 会话令牌的常数时间比较与拦截器 `sessionInterceptor` | handshake.md §4 |
 | `src/plugin/host.ts` | 宿主回调客户端 `findHost` / `Host`（`Host.Invoke`、`Host.Publish`）、正在处理的租户 `TenantLedger` | invocation.md §5 |
 | `src/plugin/conversion.ts` | proto 与 SDK 类型的互转：Error 与 Status 的写出与读入、`readDetails`、元数据与调用上下文、信封 | invocation.md §2、§3 |
-| `src/plugin/deadline.ts` | `deadline` 的严格读法、写法与生效截止时间 | invocation.md §2 |
+| `src/plugin/deadline.ts` | `deadline` 的严格读法、写法与生效截止时间 | RFC-0003 规则 8（文法），invocation.md §2 |
 | `src/plugin/errors.ts` | 固定的 `reason` 文本、`plugins.*` 错误的构造、`thrownTypeName`、回调的 gRPC 状态映射 `mapCallbackStatus` | invocation.md §5、§8，lifecycle.md §7.6 |
 | `src/plugin/configuration.ts` | 类型化读取 `ConfigurationSection` | lifecycle.md §7.2 |
 | `src/plugin/catalog.ts` | 作者的消息目录 `loadCatalog` 与核对 | handshake.md §3，RFC-0010 |

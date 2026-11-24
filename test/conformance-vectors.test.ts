@@ -37,6 +37,7 @@ const replayed: readonly string[] = [
   'primitives/kernel-messages.json', // primitives.test.ts、invocation.test.ts、manifest.test.ts、operation.test.ts
   'primitives/lifecycle-transitions.json', // primitives.test.ts
   'primitives/message-templates.json', // primitives.test.ts
+  'primitives/operation-ids.json', // primitives.test.ts、operation.test.ts
   'primitives/trace-context.json', // invocation.test.ts
   'primitives/wire-encoding.json', // primitives.test.ts
 ];

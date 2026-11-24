@@ -365,7 +365,14 @@ interface ObjectShape {
 }
 
 const semverPattern = /^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$/;
-const activationPattern = /^(onStartup|onOperation:[a-z0-9.*-]+|onEvent:[a-z0-9.*-]+)$/;
+/**
+ * 激活事件（RFC-0002 解析规则 2 第 3 步，plugin/lifecycle.md §3）
+ *
+ * @remarks
+ * `onOperation:` 的模式是操作 ID 的字符加 `*`，`onEvent:` 的模式是主题的字符加 `*`：主题可以带下划线（RFC-0009），
+ * 所以只有 `onEvent:` 的模式收下划线（ADR-0276）
+ */
+const activationPattern = /^(onStartup|onOperation:[a-z0-9.*-]+|onEvent:[a-z0-9._*-]+)$/;
 /** `.` 不匹配换行，与 .NET 一致：权限里有换行不合法 */
 const permissionPattern = /^(net\.outbound|fs\.read|fs\.write|capability):.+$/;
 const bindingNamePattern = /^[a-z][a-z0-9-]*$/;
@@ -444,7 +451,7 @@ const rootShape: ObjectShape = shape(
             ['middleware', 'stage'],
           ),
         ),
-        // 操作 ID 的文法在原语层（conventions/operation-ids.md；Schema 自 ADR-0233 起与它相同），与操作契约共用
+        // 操作 ID 的规则在原语层（conventions/operation-ids.md：文法加 128 个字符的上限，Schema 与它相同），与操作契约共用
         operations: list(text(isOperationId)),
         config: object({ section: matches(sectionPattern), schema: anyText }, ['section']),
         permissions: list(matches(permissionCodePattern), { unique: true }),

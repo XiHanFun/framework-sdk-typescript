@@ -42,6 +42,7 @@ import {
   maxBaggageValueLength,
   maxInt64,
   maxJsonDepth,
+  maxOperationIdLength,
   messageKeyDomain,
   minInt64,
   numberSymbols,
@@ -137,6 +138,29 @@ test('错误码遵循向量', () => {
   assert.equal(errorCodeKind('PERSISTENCE_CONFLICT_001'), 'CONFLICT');
   assert.equal(errorCodeDomain('PERSISTENCE_CONFLICT_001'), 'PERSISTENCE');
   assert.equal(errorCodeKind('bad'), undefined);
+});
+
+test('操作 ID 遵循向量：文法与 128 个字符的上限', () => {
+  const vectors = vector<{ maxLength: number; valid: string[]; invalid: string[] }>('operation-ids.json');
+  assert.ok(vectors.valid.length > 0 && vectors.invalid.length > 0);
+  assert.equal(maxOperationIdLength, vectors.maxLength);
+  for (const id of vectors.valid) {
+    assert.ok(isOperationId(id), `${id} must be valid`);
+    assert.equal(validateOperationId(id), id);
+  }
+  for (const id of vectors.invalid) {
+    assert.ok(!isOperationId(id), `${JSON.stringify(id)} must be invalid`);
+    throwsCode(() => validateOperationId(id), ErrorCode.InvalidArgument);
+  }
+  // 向量要把上限的两侧都带上：正好在上限上的合法，别处都合文法、只多一个字符的不合法
+  assert.ok(vectors.valid.some((id) => id.length === vectors.maxLength));
+  assert.ok(vectors.invalid.some((id) => id.length === vectors.maxLength + 1));
+  // 上限按整个 ID 计，与哪一段长无关
+  const resource = 'a'.repeat(vectors.maxLength - 2);
+  assert.ok(isOperationId(`${resource}.b`));
+  assert.ok(!isOperationId(`${resource}a.b`));
+  assert.ok(isOperationId(`a.${'b'.repeat(vectors.maxLength - 2)}`));
+  assert.ok(!isOperationId(`a.${'b'.repeat(vectors.maxLength - 1)}`));
 });
 
 test('Baggage 键遵循向量', () => {
@@ -970,10 +994,14 @@ test('校验并原样返回：错误码、消息键与操作 ID', () => {
     'orders-.create',
     '-orders.create',
     'orders.create\n',
+    `orders.${'a'.repeat(122)}`,
   ]) {
     assert.ok(!isOperationId(id), JSON.stringify(id));
     const error = throwsCode(() => validateOperationId(id), ErrorCode.InvalidArgument);
-    assert.equal(error.message, `The operation ID '${id}' must match <resource>.<verb>.`);
+    assert.equal(
+      error.message,
+      `The operation ID '${id}' must match <resource>.<verb> and be at most 128 characters long.`,
+    );
   }
   throwsCode(() => validateOperationId(undefined as unknown as string), ErrorCode.InvalidArgument);
   throwsCode(() => validateMessageKey(42 as unknown as string), ErrorCode.InvalidArgument);
