@@ -90,7 +90,7 @@ framework-sdk-typescript 是 XiHan Framework 的 TypeScript SDK，[XiHan Spec](h
 - 向量回放：测试直接读 `spec/conformance/vectors/` 逐条核对，不手抄期望值。`test/conformance-vectors.test.ts` 按 RFC-0024 读 `spec/conformance/profiles.json`，认领的档（`claimedProfiles`：`core`、`plugin`）要求的每个向量要么在 `replayed` 里由某个测试回放，要么在 `gaps` 里列为缺口并写理由；缺口同时写进 README「状态」一节（RFC-0024「实现钉规范」第 3 条）与文档页「一致性」一节。
 - 规范没写到的行为不自行发明：停下来报告差异（.NET 的实测行为、本 SDK 的现状），提出规范文字，在 framework-spec 提交。
 - 公开契约的变化顺序：framework-spec 的 RFC → XiHan.Framework 的 ADR（`plans/adr`）→ 各 SDK。不在本仓库先改公开契约。
-- 升规范指针：规范提交在 framework-spec 推送之后，`git -C spec fetch` 再 `git -C spec checkout <提交>`；跑全部门禁，规范在认领的档里新增的向量要回放或列为缺口；指针与随之修改的实现、测试同一个提交，说明里写「规范指针升到 <短哈希>」。发预发布或正式版时子模块必须正好在规范标签上。
+- 升规范指针：规范提交在 framework-spec 推送之后，`git -C spec fetch` 再 `git -C spec checkout <提交>`；跑全部门禁，规范在认领的档里新增的向量要回放或列为缺口；指针与随之修改的实现、测试同一个提交，说明写实现的结果并注 ADR。发预发布或正式版时子模块必须正好在规范标签上。
 
 ## 代码规范
 
@@ -142,6 +142,7 @@ framework-sdk-typescript 是 XiHan Framework 的 TypeScript SDK，[XiHan Spec](h
 ## Git 与提交
 
 - 使用 Conventional Commits：`<type>(<scope>): <中文说明>`，scope 用本仓库的模块名 `primitives`、`manifest`、`invocation`、`pipeline`、`operation`、`plugin`、`conformance`，或 `spec`、`docs`、`build`、`ci`。
+- 提交信息只写一行标题，不写正文。说明一句话讲这次改动的结果，不超过 40 个字（汉字、字母、数字、标点各算一个，末尾的 `（ADR-NNNN）` 不计）；不再用「：」「；」往下展开，不罗列文件、成员、取值与改前改后，不写测试数量与门禁结果，这些细节写进 文档页、ADR 或 PR 描述。细则见 `commit-msg` 技能。
 - 一项能力或一个修复一个提交；实现、测试、README 与规范指针属于同一闭环时放在同一提交。
 - 保留用户已有和无关改动；不 reset、checkout 或清理它们，只暂存自己的文件。
 - 提交前检查 `git diff --check` 与相关门禁（至少 `pnpm check`、`pnpm typecheck`、`pnpm test`）。
