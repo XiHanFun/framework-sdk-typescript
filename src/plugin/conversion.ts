@@ -43,6 +43,30 @@ export function toBytes(value: string | Uint8Array | undefined): Uint8Array {
 }
 
 /**
+ * 把字符串严格编码成 UTF-8（RFC-0001「JSON 文本」的写出与转交，ADR-0312）；有孤立的代理项、编码不成时为 `undefined`
+ *
+ * @remarks
+ * `TextEncoder` 把孤立的代理项换成 U+FFFD 照样编码，得到的是另一份文本，所以先逐个码元核对代理项成对。
+ * 不用 `String.prototype.isWellFormed`：Node 22 有它，但构建的 `lib` 是 ES2023，类型里没有
+ *
+ * @internal
+ */
+export function toStrictUtf8(text: string): Uint8Array | undefined {
+  for (let index = 0; index < text.length; index += 1) {
+    const code = text.charCodeAt(index);
+    if (code >= 0xd800 && code <= 0xdfff) {
+      // 高代理项之后必须紧跟低代理项，成对的跳过低代理项；单独的低代理项与末尾的高代理项都编码不成
+      const next = text.charCodeAt(index + 1);
+      if (code > 0xdbff || !(next >= 0xdc00 && next <= 0xdfff)) {
+        return undefined;
+      }
+      index += 1;
+    }
+  }
+  return utf8.encode(text);
+}
+
+/**
  * 把 UTF-8 字节换成字符串；不合法的序列换成 U+FFFD
  *
  * @internal

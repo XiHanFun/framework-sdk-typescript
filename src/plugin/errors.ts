@@ -1,6 +1,6 @@
 import { InvocationErrorCode, InvocationMessageKey } from '../invocation/index.ts';
 import { OperationErrorCode, OperationMessageKey } from '../operation/index.ts';
-import { ErrorInfo } from '../primitives/index.ts';
+import { ErrorInfo, JsonPath } from '../primitives/index.ts';
 import { CallbackPermission, PluginErrorCode, PluginMessageKey } from './protocol.ts';
 
 /**
@@ -24,6 +24,22 @@ export const PluginReason = Object.freeze({
  */
 export function invalidErrorCodeReason(code: string): string {
   return `invalid error code '${code}'`;
+}
+
+/**
+ * 以字符串给出的 `Host.Invoke` 载荷编码不成 UTF-8 时的本地错误（invocation.md §5，ADR-0312）
+ *
+ * @remarks
+ * 与宿主读到不是 JSON 的载荷时相同（RFC-0011 规则 2）：`KERNEL_VALIDATION_001` + `kernel.operation.invalid_payload`，
+ * `id` 为操作 ID，`reason` 为 `$`
+ *
+ * @internal
+ */
+export function payloadNotUtf8(operation: string): ErrorInfo {
+  return ErrorInfo.validation(OperationErrorCode.InvalidPayload, OperationMessageKey.InvalidPayload, {
+    id: operation,
+    reason: JsonPath.root,
+  });
 }
 
 /**

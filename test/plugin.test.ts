@@ -2664,6 +2664,76 @@ test('回调发出前依次核对：端点、权限、租户，最后截止时�
   }
 });
 
+test('Host.invoke 的字符串载荷严格编码成 UTF-8：孤立的代理项不发请求、报 invalid_payload，排在权限、租户与截止时间之后；成对的代理项与字节照发（invocation.md §5，ADR-0312）', async () => {
+  const host = await fakeHost({});
+  const high = String.fromCharCode(0xd83d);
+  const low = String.fromCharCode(0xde00);
+  const broken = `{"x":"${high}"}`;
+  // 单独的高代理项、单独的低代理项、颠倒的一对、文本末尾的高代理项
+  const lone = [broken, `{"x":"${low}"}`, `{"x":"${low}${high}"}`, `{"x":"a"}${high}`];
+  const invalidPayload = {
+    code: 'KERNEL_VALIDATION_001',
+    key: 'kernel.operation.invalid_payload',
+    details: { id: 'orders.get', reason: '$' },
+  };
+  // 扮演宿主的服务在任何断言失败时也要关掉，否则它让测试进程一直不退出
+  try {
+    const plugin = await launch({}, { XIHAN_PLUGIN_HOST_ADDRESS: host.address });
+    try {
+      await startPlugin(plugin.client);
+      await invoke(plugin.client, 'probes.context');
+      const callback = findHost(plugin.probe.lastContext as InvocationContext);
+      assert.ok(callback !== undefined);
+      const context = InvocationContext.create({});
+      for (const payload of lone) {
+        const response = await callback.invoke(context, 'orders.get', payload);
+        assert.deepEqual(!response.outcome.ok && describeError(response.outcome.error), invalidPayload, payload);
+      }
+      // 租户、截止时间与取消都先于载荷
+      const foreign = await callback.invoke(context.withBaggage(BaggageKey.Tenant, 't9'), 'orders.get', broken);
+      assert.equal(!foreign.outcome.ok && foreign.outcome.error.messageKey, PluginMessageKey.TenantDenied);
+      const expired = InvocationContext.create({ deadline: Date.now() - 1000 });
+      const late = await callback.invoke(expired, 'orders.get', broken);
+      assert.equal(!late.outcome.ok && late.outcome.error.code, 'KERNEL_TIMEOUT_001');
+      const controller = new AbortController();
+      controller.abort();
+      const aborted = InvocationContext.create({ signal: controller.signal });
+      const cancelled = await callback.invoke(aborted, 'orders.get', broken);
+      assert.equal(!cancelled.outcome.ok && cancelled.outcome.error.code, 'KERNEL_CANCELLED_001');
+      assert.equal(host.received.length, 0, 'a payload that cannot be encoded as UTF-8 is never sent');
+
+      // 成对的代理项是一个字符，照常编码发出；字节原样发出，不合法的 UTF-8 交给宿主核对
+      const paired = `{"x":"${high}${low}"}`;
+      const bytes = new Uint8Array([0x7b, 0x22, 0x78, 0x22, 0x3a, 0x22, 0xed, 0xa0, 0x80, 0x22, 0x7d]);
+      assert.equal((await callback.invoke(context, 'orders.get', paired)).outcome.ok, true);
+      assert.equal((await callback.invoke(context, 'orders.get', bytes)).outcome.ok, true);
+      assert.deepEqual(
+        host.received.map((entry) => Buffer.from((entry.request as pb.InvokeRequest).payload)),
+        [Buffer.from(paired, 'utf8'), Buffer.from(bytes)],
+      );
+    } finally {
+      await plugin.close();
+    }
+    // 权限先于载荷
+    const denied = await launch({}, { XIHAN_PLUGIN_HOST_ADDRESS: host.address });
+    try {
+      await startPlugin(denied.client, '{}', []);
+      await invoke(denied.client, 'probes.context');
+      const callback = findHost(denied.probe.lastContext as InvocationContext);
+      const response = await callback?.invoke(InvocationContext.create({}), 'orders.get', broken);
+      assert.equal(
+        response && !response.outcome.ok && response.outcome.error.messageKey,
+        PluginMessageKey.CallbackDenied,
+      );
+      assert.equal(host.received.length, 2, 'denied callbacks never reach the host');
+    } finally {
+      await denied.close();
+    }
+  } finally {
+    host.close();
+  }
+});
+
 test('回调途中到了截止时间按 DeadlineExceeded、调用方取消按 Cancelled 映射，不另按时钟改写（invocation.md §5）', async () => {
   const host = await fakeHost({
     invoke: () =>

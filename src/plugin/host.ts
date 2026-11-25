@@ -12,6 +12,7 @@ import {
   tenantOf,
   toBytes,
   toProtoEnvelope,
+  toStrictUtf8,
 } from './conversion.ts';
 import {
   type CallbackRpc,
@@ -20,6 +21,7 @@ import {
   hostUnavailable,
   mapCallbackStatus,
   PluginReason,
+  payloadNotUtf8,
   processFailed,
   resultCountReason,
   statusReason,
@@ -65,6 +67,21 @@ export class TenantLedger {
   }
 }
 
+/**
+ * `Host.Invoke` 发出的载荷字节（invocation.md §5，ADR-0312）
+ *
+ * @remarks
+ * 字符串严格编码成 UTF-8，有孤立的代理项即本地失败、不发请求（`KERNEL_VALIDATION_001` + `kernel.operation.invalid_payload`，
+ * `reason` 为 `$`），不像 `TextEncoder` 那样换成 U+FFFD 照发；字节原样发出、由宿主核对；没有载荷是空字节，宿主按 `{}` 处理
+ */
+function invokePayload(operation: string, payload: string | Uint8Array | undefined): Result<Uint8Array> {
+  if (typeof payload !== 'string') {
+    return Result.ok(toBytes(payload));
+  }
+  const bytes = toStrictUtf8(payload);
+  return bytes === undefined ? Result.fail(payloadNotUtf8(operation)) : Result.ok(bytes);
+}
+
 /** 调用上下文对象袋里放宿主客户端的键 */
 const hostKey = new ItemKey<Host>('plugin.host');
 
@@ -96,8 +113,9 @@ export function attachHost(context: InvocationContext, host: Host): void {
  * 回调以 `PLUGINS_UNAVAILABLE_001` + `plugins.host.unavailable`（`reason` 为 `no supported callback endpoint`）失败。
  * 发出之前在本地按宿主的顺序核对，与宿主给出同样的错误、不合即不发请求：所需权限既在清单 `permissions` 里、也在
  * `Configure` 的 `granted_permissions` 里，否则 `plugins.callback.denied`；上下文的 `xihan.tenant` 必须是插件此刻正在处理的
- * 某个调用或投递的租户，否则 `plugins.callback.tenant_denied`；最后，上下文的截止时间已过或已被取消时也不发请求，结果与
- * 映射表的 `DeadlineExceeded`、「`Cancelled`，取消信号已触发」两行相同。每次回调都在元数据 `xihan-plugin-session` 里带会话令牌，
+ * 某个调用或投递的租户，否则 `plugins.callback.tenant_denied`；上下文的截止时间已过或已被取消时也不发请求，结果与
+ * 映射表的 `DeadlineExceeded`、「`Cancelled`，取消信号已触发」两行相同；最后，以字符串给出的 `Host.Invoke` 载荷编码不成 UTF-8
+ * 时不发请求，`kernel.operation.invalid_payload`（ADR-0312）。每次回调都在元数据 `xihan-plugin-session` 里带会话令牌，
  * 宿主以插件身份执行（主体 ID 为清单 ID）。连接是惰性的，第一次回调才建立
  */
 export class Host {
@@ -135,7 +153,9 @@ export class Host {
    * @remarks
    * 元数据取自上下文：按 RFC-0003 写出的 traceparent、截止时间（UTC、七位小数）与已登记的 Baggage，`trace_state` 为空；
    * gRPC 调用的截止时间与上下文相同，调用方取消即取消回调。业务失败是宿主返回的 `Status.error`，按 invocation.md §3 的读入规则还原；
-   * gRPC 失败按 invocation.md §5 的表换成原语层错误
+   * gRPC 失败按 invocation.md §5 的表换成原语层错误。字符串载荷在发出之前严格编码成 UTF-8：有孤立的代理项时不发请求，
+   * 结果是 `KERNEL_VALIDATION_001` + `kernel.operation.invalid_payload`（`id` 为操作 ID，`reason` 为 `$`），排在权限、租户与
+   * 截止时间的本地核对之后（ADR-0312）；字节载荷原样发出，由宿主核对
    *
    * @param payload - 请求的 JSON 文本或 UTF-8 字节；缺省为空，宿主按 `{}` 处理
    */
@@ -144,18 +164,14 @@ export class Host {
     operation: string,
     payload?: string | Uint8Array,
   ): Promise<OperationResponse> {
-    const reply = await this.#call<InvokeResponse>(
+    const reply = await this.#call<Uint8Array, InvokeResponse>(
       context,
       'invoke',
       operation,
       CallbackPermission.Invoke,
-      (client, metadata, options, done) =>
-        client.invoke(
-          { operation, payload: toBytes(payload), metadata: metadataFromContext(context) },
-          metadata,
-          options,
-          done,
-        ),
+      () => invokePayload(operation, payload),
+      (client, bytes, metadata, options, done) =>
+        client.invoke({ operation, payload: bytes, metadata: metadataFromContext(context) }, metadata, options, done),
     );
     if (!reply.ok) {
       return { outcome: Result.fail(reply.error), payload: undefined };
@@ -178,14 +194,15 @@ export class Host {
     if (envelopes.length === 0) {
       return [];
     }
-    const reply = await this.#call<PublishResponse>(
+    const reply = await this.#call<readonly Envelope[], PublishResponse>(
       context,
       'publish',
       'publish',
       CallbackPermission.Publish,
-      (client, metadata, options, done) =>
+      () => Result.ok(envelopes),
+      (client, batch, metadata, options, done) =>
         client.publish(
-          { envelopes: envelopes.map(toProtoEnvelope), metadata: metadataFromContext(context) },
+          { envelopes: batch.map(toProtoEnvelope), metadata: metadataFromContext(context) },
           metadata,
           options,
           done,
@@ -214,8 +231,8 @@ export class Host {
   /**
    * 发出之前的本地核对（invocation.md §5），依次：① 有没有可用的回调端点（由 {@link Host.#call} 先核对，它要拿端点去连）；
    * 按宿主的顺序 ② 权限、③ 上下文的租户；④ 上下文的截止时间已过或已被取消，结果与映射表相应的一行相同
-   * （截止时间已过按 `DeadlineExceeded`，已被取消按「`Cancelled`，取消信号已触发」）。客户端已经关闭的按连不上宿主。
-   * 都通过时为 `undefined`
+   * （截止时间已过按 `DeadlineExceeded`，已被取消按「`Cancelled`，取消信号已触发」）。都通过时为 `undefined`；
+   * 之后 {@link Host.#call} 再准备请求（⑤ 载荷编码成 UTF-8），客户端已经关闭的最后按连不上宿主
    */
   #refusal(context: InvocationContext, rpc: CallbackRpc, operation: string, permission: string): ErrorInfo | undefined {
     if (!this.#permitted(permission)) {
@@ -233,20 +250,23 @@ export class Host {
     if (cancelled) {
       return mapCallbackStatus(rpc, GrpcCode.Cancelled, '', true, this.#pluginId, operation);
     }
-    if (this.#closed) {
-      return hostUnavailable(this.#pluginId, statusReason(GrpcCode.Unavailable, 'the host client is closed'));
-    }
     return undefined;
   }
 
-  /** 发出一次一元回调：带会话令牌与截止时间，调用方取消即取消回调 */
-  #call<T>(
+  /**
+   * 发出一次一元回调：带会话令牌与截止时间，调用方取消即取消回调
+   *
+   * @param prepare - 本地核对都通过之后准备请求的内容；失败即不发请求，结果就是它的错误
+   */
+  #call<Q, T>(
     context: InvocationContext,
     rpc: CallbackRpc,
     operation: string,
     permission: string,
+    prepare: () => Result<Q>,
     start: (
       client: HostClient,
+      request: Q,
       metadata: Metadata,
       options: { deadline?: Date },
       done: (error: ServiceError | null, value: T) => void,
@@ -261,12 +281,23 @@ export class Host {
     if (refusal !== undefined) {
       return Promise.resolve(Result.fail(refusal));
     }
+    // 权限、租户与截止时间之后才准备请求：载荷编码不成相当于宿主在管道的 Validate 阶段才发现的错误，排在它们之后（ADR-0312）
+    const request = prepare();
+    if (!request.ok) {
+      return Promise.resolve(Result.fail(request.error));
+    }
+    // 客户端已经关闭等于请求发不出去，与 RPC 报 Unavailable 同一行，所以排在准备请求之后
+    if (this.#closed) {
+      return Promise.resolve(
+        Result.fail(hostUnavailable(this.#pluginId, statusReason(GrpcCode.Unavailable, 'the host client is closed'))),
+      );
+    }
     const metadata = new Metadata();
     metadata.set(PluginProtocol.sessionMetadataKey, this.#session);
     const options = context.deadline === undefined ? {} : { deadline: new Date(context.deadline) };
     return new Promise((resolve) => {
       const client = this.#connect(endpoint);
-      const call = start(client, metadata, options, (error, value) => {
+      const call = start(client, request.value, metadata, options, (error, value) => {
         context.signal.removeEventListener('abort', abort);
         if (error === null) {
           resolve(Result.ok(value));
