@@ -66,7 +66,14 @@ import {
 } from 'xihan-framework/primitives';
 
 // 协议的生成代码与内部规则函数不是公开入口：测试直接加载它们，扮演宿主调用插件、扮演宿主的回调服务、回放向量
-import { formatEnvelopeTime, fromProtoError, fromStatus, readEnvelopeTime } from '../src/plugin/conversion.ts';
+import {
+  formatEnvelopeTime,
+  fromProtoEnvelope,
+  fromProtoError,
+  fromStatus,
+  readEnvelopeTime,
+  toProtoEnvelope,
+} from '../src/plugin/conversion.ts';
 import { effectiveDeadline, formatDeadline, parseDeadline } from '../src/plugin/deadline.ts';
 import {
   callbackDenied,
@@ -666,6 +673,33 @@ test('信封的 time 读入与写出拿 envelope-times.json 自测：毫秒之�
   // 九位小数截到毫秒、不进位：最晚的时刻不会进到 10000 年
   assert.equal(readEnvelopeTime('9999-12-31T23:59:59.999999999Z')?.toISOString(), '9999-12-31T23:59:59.999Z');
   assert.equal(readEnvelopeTime('2026-11-25T03:25:00.1234567+00:00')?.toISOString(), '2026-11-25T03:25:00.123Z');
+});
+
+test('信封的 time 按毫秒精度写出与读入遵循 sdk-envelope-times.json：截断不进位，纪元之前向下取（invocation.md §4，ADR-0310）', () => {
+  const vectors = vector<{
+    precisions: { milliseconds: number };
+    writing: { name: string; instant: string | null; text: { milliseconds: string } }[];
+    reading: { name: string; text: string; utc: { milliseconds: string } }[];
+    unreadable: { name: string; text: string }[];
+  }>('sdk-envelope-times.json');
+  assert.equal(vectors.precisions.milliseconds, 3);
+  const base = { topic: 'probe.events', id: 'e-1', source: 'urn:test', type: 'probe.happened' };
+  for (const writing of vectors.writing) {
+    // 作者给的时刻按 SDK 读宿主文本的读法构造：Date 没有偏移、只到毫秒，更细的小数截去；再经发布的写出路径写成文本
+    const time = writing.instant === null ? undefined : readEnvelopeTime(writing.instant);
+    assert.notEqual(time, null, `${writing.name}: the instant must be read`);
+    assert.equal(toProtoEnvelope({ ...base, time: time ?? undefined }).time, writing.text.milliseconds, writing.name);
+  }
+  for (const reading of vectors.reading) {
+    // 投递的读入路径：期望的时刻已截到毫秒，纪元之前的也不晚于原文
+    const envelope = fromProtoEnvelope(pb.Envelope.fromPartial({ ...base, specVersion: '1.0', time: reading.text }));
+    assert.ok(envelope !== undefined, `${reading.name}: ${JSON.stringify(reading.text)} must be read`);
+    assert.equal(envelope.time?.getTime(), utcMilliseconds(reading.utc.milliseconds), reading.name);
+  }
+  for (const unreadable of vectors.unreadable) {
+    const envelope = fromProtoEnvelope(pb.Envelope.fromPartial({ ...base, specVersion: '1.0', time: unreadable.text }));
+    assert.equal(envelope, undefined, unreadable.name);
+  }
 });
 
 test('运行时的消息键、参数、错误码、en-US 模板与固定的 reason 遵循 plugin-messages.json（invocation.md §8）', () => {
@@ -1999,9 +2033,15 @@ test('HandleEvent：time 读成 Date、data_schema 原样交给处理器；time 
         ['0001-01-01T00:00:00.000Z', '\t'],
       ],
     );
-    // 主题没有订阅也是 InvalidArgument：time 在找订阅之前核对
+    // 主题没有订阅也是 InvalidArgument：time 在找订阅之前核对；sdk-envelope-times.json 的 unreadable 每条都经投递核对（ADR-0310）
+    const unreadable = [
+      '2026-12-31T23:59:60Z',
+      '2026-11-25T03:25:00',
+      '2026-11-25T03:25:00.1234567890Z',
+      ...vector<{ unreadable: { text: string }[] }>('sdk-envelope-times.json').unreadable.map((entry) => entry.text),
+    ];
     for (const topic of ['probe.events', 'nobody.listens']) {
-      for (const time of ['2026-12-31T23:59:60Z', '2026-11-25T03:25:00', '2026-11-25T03:25:00.1234567890Z']) {
+      for (const time of unreadable) {
         await rejectsWith(send(topic, time), status.INVALID_ARGUMENT);
       }
     }

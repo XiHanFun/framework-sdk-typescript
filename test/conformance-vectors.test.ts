@@ -26,12 +26,13 @@ const replayed: readonly string[] = [
   'plugin/binding-properties.json', // plugin.test.ts（reading；names、limits、delivery 与 json 是宿主一侧的）
   'plugin/callback-status.json', // plugin.test.ts
   'plugin/deadlines.json', // plugin.test.ts
-  'plugin/envelope-times.json', // plugin.test.ts（host 档，信封的 time 是 Date，自测读写，ADR-0293）
+  'plugin/envelope-times.json', // plugin.test.ts（valid 与 invalid 是 SDK 的读入，written 是宿主的写法，ADR-0310）
   'plugin/error-reading.json', // plugin.test.ts
   'plugin/handshake-lines.json', // plugin.test.ts
   'plugin/host-addresses.json', // plugin.test.ts
   'plugin/plugin-messages.json', // plugin.test.ts
   'plugin/protocol-versions.json', // plugin.test.ts
+  'plugin/sdk-envelope-times.json', // plugin.test.ts（毫秒一列，unreadable 另经投递核对，ADR-0310）
   'primitives/baggage-keys.json', // primitives.test.ts、invocation.test.ts
   'primitives/capability-requirements.json', // manifest.test.ts
   'primitives/error-codes.json', // primitives.test.ts
