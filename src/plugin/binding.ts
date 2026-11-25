@@ -38,7 +38,7 @@ export interface BindingSummary {
   readonly name: string;
   /** 资源类型 */
   readonly type: string;
-  /** 属性名，按属性表里的先后 */
+  /** 属性名，按 UTF-16 码元升序：与别的 SDK 对同一个绑定写出同一份 JSON（属性名只有 ASCII，等于按字节） */
   readonly propertyNames: readonly string[];
 }
 
@@ -57,7 +57,12 @@ export function deliveredBinding(
 ): PluginBinding {
   // 属性表用 Map 而不是普通对象：`__proto__` 是合文法的属性名，写进普通对象是空操作，会丢
   const binding: PluginBinding = { name, type, value, properties: new Map(properties) };
-  const summary = (): BindingSummary => ({ name, type, propertyNames: [...binding.properties.keys()] });
+  const summary = (): BindingSummary => ({
+    name,
+    type,
+    // 不按线上的先后：Go、Java、PHP 都按升序写，同一个绑定在六个 SDK 里得到同一份文本
+    propertyNames: [...binding.properties.keys()].sort((left, right) => (left < right ? -1 : left > right ? 1 : 0)),
+  });
   // 调试出口是不可枚举的自有成员：绑定仍是普通对象，展开与逐成员比较只见上面四个成员；
   // JSON.stringify、日志、模板字符串与 console.log 取到的是这几个出口，写不出主值与属性值
   Object.defineProperties(binding, {

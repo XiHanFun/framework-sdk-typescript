@@ -1200,12 +1200,12 @@ test('绑定的调试出口只带绑定名、类型与属性名，不带主值�
     }
     assert.equal(
       outputs['JSON.stringify(binding)'],
-      '{"name":"db","type":"connection:relational","propertyNames":["username","password"]}',
+      '{"name":"db","type":"connection:relational","propertyNames":["password","username"]}',
     );
     assert.equal(outputs['String(binding)'], `PluginBinding(${outputs['JSON.stringify(binding)']})`);
     assert.equal(
       inspect(binding, { breakLength: Number.POSITIVE_INFINITY }),
-      "PluginBinding { name: 'db', type: 'connection:relational', propertyNames: [ 'username', 'password' ] }",
+      "PluginBinding { name: 'db', type: 'connection:relational', propertyNames: [ 'password', 'username' ] }",
     );
     // 层数用完时只写一个记号
     assert.equal(inspect([binding], { depth: 0 }), '[ [PluginBinding] ]');
