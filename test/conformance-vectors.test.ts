@@ -26,6 +26,7 @@ const replayed: readonly string[] = [
   'plugin/binding-properties.json', // plugin.test.ts（reading；names、limits、delivery 与 json 是宿主一侧的）
   'plugin/callback-status.json', // plugin.test.ts
   'plugin/deadlines.json', // plugin.test.ts
+  'plugin/envelope-times.json', // plugin.test.ts（host 档，信封的 time 是 Date，自测读写，ADR-0293）
   'plugin/error-reading.json', // plugin.test.ts
   'plugin/handshake-lines.json', // plugin.test.ts
   'plugin/host-addresses.json', // plugin.test.ts

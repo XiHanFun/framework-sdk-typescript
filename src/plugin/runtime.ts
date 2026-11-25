@@ -1239,8 +1239,8 @@ class PluginRuntime {
    * `HandleEvent`（invocation.md §4）：会话令牌之后依次核对
    *
    * @remarks
-   * 没有信封或方式不是空、`competing`、`broadcast` 以 gRPC `InvalidArgument` 拒绝；按（主题，方式，类型）找订阅，一个也没有为
-   * `KERNEL_NOTFOUND_001` + `plugins.event.unsubscribed`，不改交给另一种方式的处理器；不在可服务状态为
+   * 没有信封、方式不是空、`competing`、`broadcast`，或信封的 `time` 读不出，以 gRPC `InvalidArgument` 拒绝；按（主题，方式，类型）
+   * 找订阅，一个也没有为 `KERNEL_NOTFOUND_001` + `plugins.event.unsubscribed`，不改交给另一种方式的处理器；不在可服务状态为
    * `PLUGINS_UNAVAILABLE_001`；然后还原上下文，匹配的订阅按声明顺序依次执行，第一个失败即终止并作为结果，
    * 处理器抛出为 `KERNEL_UNEXPECTED_001` + `kernel.invocation.unhandled_exception`（调用已中止时抛出的中止按取消归因）
    */
@@ -1254,7 +1254,14 @@ class PluginRuntime {
         "A delivery needs an envelope and a mode that is empty, 'competing' or 'broadcast'.",
       );
     }
+    // 宿主写来的 time 按规范一律合文法；读不出是宿主写来的内容不合法，与没有信封同一处置，不找订阅、不交给处理器
     const envelope = fromProtoEnvelope(request.envelope);
+    if (envelope === undefined) {
+      throw statusError(
+        grpcStatus.INVALID_ARGUMENT,
+        `The envelope time '${request.envelope.time}' does not follow the timestamp grammar.`,
+      );
+    }
     const mode = (request.mode || SubscriptionMode.Competing) as SubscriptionMode;
     const handlers = (this.#options.subscriptions ?? []).filter(
       (subscription) =>

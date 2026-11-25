@@ -22,7 +22,7 @@ import {
   writeJson,
 } from '../primitives/index.ts';
 import { isBlank } from '../primitives/whitespace.ts';
-import { effectiveDeadline, formatDeadline } from './deadline.ts';
+import { effectiveDeadline, formatDeadline, parseDeadline } from './deadline.ts';
 import { invalidErrorCodeReason, PluginReason, processFailed } from './errors.ts';
 import type * as pb from './gen/plugin.ts';
 import { pluginMessages } from './messages.ts';
@@ -267,8 +267,16 @@ export interface Envelope {
   readonly specVersion?: string;
   /** CloudEvents `subject` */
   readonly subject?: string;
-  /** CloudEvents `time`（RFC 3339） */
-  readonly time?: string;
+  /**
+   * CloudEvents `time`；省略或 `undefined` 表示没有
+   *
+   * @remarks
+   * 发布时换算成 UTC 写成 RFC 3339：以 `Z` 结尾，秒的小数部分去掉末尾的 0、全为 0 时不写小数点，
+   * 最多三位（`Date` 只到毫秒）。SDK 不在本地核对：年份不在 0001–9999 之间的时刻照 `toISOString` 的写法写出（`0000-…`、
+   * 扩展年份 `+010000-…`），`Invalid Date` 写成它的文本，都由宿主以 `messaging.envelope.invalid_time` 拒绝那一项
+   * （invocation.md §4，ADR-0293）
+   */
+  readonly time?: Date | undefined;
   /** CloudEvents `datacontenttype`；发布时缺省为 `application/json` */
   readonly dataContentType?: string;
   /**
@@ -290,7 +298,15 @@ export interface Envelope {
 export interface DeliveredEnvelope extends Envelope {
   readonly specVersion: string;
   readonly subject: string;
-  readonly time: string;
+  /**
+   * 宿主写来的 `time` 读成的时刻；空串（没有时间）是 `undefined`
+   *
+   * @remarks
+   * 按规范的时间文法读（invocation.md §4，与截止时间同一条，RFC-0003 规则 8）：带偏移的换算成 UTC，不认闰秒 `60`，小数一到九位。
+   * `Date` 只到毫秒，第三位之后的小数截断、不进位（`…59.999999999Z` 读成 `…59.999Z`）；读不出的投递以 gRPC `InvalidArgument` 拒绝，
+   * 不交给处理器
+   */
+  readonly time: Date | undefined;
   readonly dataContentType: string;
   /** 宿主写来的 `data_schema`，空串表示没有 */
   readonly dataSchema: string;
@@ -311,7 +327,7 @@ export function toProtoEnvelope(envelope: Envelope): pb.Envelope {
     type: envelope.type,
     specVersion: envelope.specVersion || '1.0',
     subject: envelope.subject ?? '',
-    time: envelope.time ?? '',
+    time: envelope.time === undefined ? '' : formatEnvelopeTime(envelope.time),
     dataContentType: envelope.dataContentType || 'application/json',
     data: toBytes(envelope.data),
     extensions: new Map(Object.entries(envelope.extensions ?? {})),
@@ -320,11 +336,16 @@ export function toProtoEnvelope(envelope: Envelope): pb.Envelope {
 }
 
 /**
- * 把协议消息还原为信封；`data_schema` 原样交出（空串即没有）
+ * 把宿主写来的协议消息还原为信封：`time` 按 {@link readEnvelopeTime} 读，`data_schema` 原样交出（空串即没有）；
+ * `time` 读不出时为 `undefined`
  *
  * @internal
  */
-export function fromProtoEnvelope(envelope: pb.Envelope): DeliveredEnvelope {
+export function fromProtoEnvelope(envelope: pb.Envelope): DeliveredEnvelope | undefined {
+  const time = readEnvelopeTime(envelope.time);
+  if (time === null) {
+    return undefined;
+  }
   const extensions: Record<string, string> = {};
   for (const [name, value] of envelope.extensions) {
     extensions[name] = value;
@@ -336,12 +357,50 @@ export function fromProtoEnvelope(envelope: pb.Envelope): DeliveredEnvelope {
     type: envelope.type,
     specVersion: envelope.specVersion,
     subject: envelope.subject,
-    time: envelope.time,
+    time,
     dataContentType: envelope.dataContentType,
     dataSchema: envelope.dataSchema,
     data: envelope.data,
     extensions: Object.freeze(extensions),
   });
+}
+
+/**
+ * 读宿主写来的 `Envelope.time`（invocation.md §4）：空串是没有（`undefined`），否则按截止时间文本的文法（RFC-0003 规则 8）读成
+ * {@link Date}；读不出（不合文法或越界）时为 `null`
+ *
+ * @remarks
+ * 与 {@link parseDeadline} 同一个读法：`Date` 只到毫秒，第三位之后的小数截断、不进位
+ *
+ * @internal
+ */
+export function readEnvelopeTime(text: string): Date | undefined | null {
+  if (text === '') {
+    return undefined;
+  }
+  const milliseconds = parseDeadline(text);
+  return milliseconds === undefined ? null : new Date(milliseconds);
+}
+
+/**
+ * 写出信封的时刻（invocation.md §4）：换算成 UTC、以 `Z` 结尾，秒的小数部分去掉末尾的 0、全为 0 时不写小数点
+ *
+ * @remarks
+ * 各语言的 SDK 对同一时刻写出同一份文本（精度以内），`Date` 最多写三位小数。不核对范围：`toISOString` 对 0000–9999 以外的年份
+ * 写成扩展年份（`+010000-…`），`Invalid Date` 没有时刻、写成 `String(time)`，都照写，由宿主逐项核对时拒绝那一项，
+ * 不改变它与其余核对的先后（ADR-0293）
+ *
+ * @internal
+ */
+export function formatEnvelopeTime(time: Date): string {
+  if (Number.isNaN(time.getTime())) {
+    return String(time);
+  }
+  // toISOString 总是 UTC、三位小数、以 Z 结尾
+  const text = time.toISOString();
+  const dot = text.lastIndexOf('.');
+  const fraction = text.slice(dot + 1, -1).replace(/0+$/, '');
+  return fraction === '' ? `${text.slice(0, dot)}Z` : `${text.slice(0, dot + 1)}${fraction}Z`;
 }
 
 /**

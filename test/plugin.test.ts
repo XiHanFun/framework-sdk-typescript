@@ -66,7 +66,7 @@ import {
 } from 'xihan-framework/primitives';
 
 // 协议的生成代码与内部规则函数不是公开入口：测试直接加载它们，扮演宿主调用插件、扮演宿主的回调服务、回放向量
-import { fromProtoError, fromStatus } from '../src/plugin/conversion.ts';
+import { formatEnvelopeTime, fromProtoError, fromStatus, readEnvelopeTime } from '../src/plugin/conversion.ts';
 import { effectiveDeadline, formatDeadline, parseDeadline } from '../src/plugin/deadline.ts';
 import {
   callbackDenied,
@@ -601,6 +601,71 @@ test('截止时间的读法、生效的截止时间与写法遵循 deadlines.jso
   // 超出范围的时刻按两端写出，总能读回
   assert.equal(formatDeadline(Number.MAX_SAFE_INTEGER), '9999-12-31T23:59:59.9990000+00:00');
   assert.equal(formatDeadline(-Number.MAX_SAFE_INTEGER), '0001-01-01T00:00:00.0000000+00:00');
+});
+
+/**
+ * 作者给的时刻与 SDK 写出的 `time`：换算成 UTC、以 `Z` 结尾，秒的小数部分去掉末尾的 0、全为 0 时不写小数点
+ *
+ * @remarks
+ * 各语言的 SDK 对同一时刻写出同一份文本（精度以内）；`Date` 只到毫秒，更细的小数在构造 `Date` 时就截掉了
+ */
+const writtenTimes: readonly (readonly [Date, string])[] = [
+  [new Date('2026-11-25T03:25:00Z'), '2026-11-25T03:25:00Z'],
+  [new Date('2026-11-25T03:25:00.5Z'), '2026-11-25T03:25:00.5Z'],
+  [new Date('2026-11-25T03:25:00.120Z'), '2026-11-25T03:25:00.12Z'],
+  [new Date('2026-11-25T03:25:00.001Z'), '2026-11-25T03:25:00.001Z'],
+  [new Date(Date.UTC(2026, 10, 25, 3, 25, 0, 123)), '2026-11-25T03:25:00.123Z'],
+  [new Date('2026-11-25T11:25:00.25+08:00'), '2026-11-25T03:25:00.25Z'],
+  [new Date('2026-11-24T22:25:00-05:00'), '2026-11-25T03:25:00Z'],
+  [new Date('2026-11-25T00:00:00+14:00'), '2026-11-24T10:00:00Z'],
+  [new Date('0001-01-01T00:00:00Z'), '0001-01-01T00:00:00Z'],
+  [new Date('9999-12-31T23:59:59.999Z'), '9999-12-31T23:59:59.999Z'],
+];
+
+test('信封的 time 写出：换算成 UTC、以 Z 结尾，小数去掉末尾的 0、整秒不写小数点；越界与 Invalid Date 照写（invocation.md §4）', () => {
+  for (const [time, text] of writtenTimes) {
+    assert.equal(formatEnvelopeTime(time), text, text);
+  }
+  // 本机时区构造的时刻同样换算成 UTC
+  const local = new Date(2026, 10, 25, 11, 25, 0, 250);
+  assert.equal(formatEnvelopeTime(local), local.toISOString().replace('.250Z', '.25Z'));
+  // SDK 不在本地核对：0000–9999 以外的年份与 Invalid Date 照写，由宿主拒绝那一项
+  assert.equal(formatEnvelopeTime(new Date('+010000-01-01T00:00:00.000Z')), '+010000-01-01T00:00:00Z');
+  assert.equal(formatEnvelopeTime(new Date('-000001-01-01T00:00:00.500Z')), '-000001-01-01T00:00:00.5Z');
+  assert.equal(formatEnvelopeTime(new Date(Number.NaN)), 'Invalid Date');
+});
+
+test('信封的 time 读入与写出拿 envelope-times.json 自测：毫秒之后截断，写出的文本合文法、读回同一时刻（invocation.md §4，ADR-0293）', () => {
+  const vectors = vector<{
+    valid: { text: string; utc: string | null }[];
+    invalid: string[];
+    written: { instant: string | null; text: string }[];
+  }>('envelope-times.json');
+  /** 读出 text，期望时刻是 Unix 毫秒（`undefined` 为没有），写出再读回同一时刻 */
+  const expectRead = (text: string, expected: number | undefined) => {
+    const time = readEnvelopeTime(text);
+    assert.notEqual(time, null, `${JSON.stringify(text)} must be read`);
+    assert.equal(time?.getTime(), expected, JSON.stringify(text));
+    if (time instanceof Date) {
+      const written = formatEnvelopeTime(time);
+      assert.equal(readEnvelopeTime(written)?.getTime(), expected, `${text} written back as ${written}`);
+    }
+  };
+  for (const valid of vectors.valid) {
+    expectRead(valid.text, valid.utc === null ? undefined : utcMilliseconds(valid.utc));
+  }
+  for (const invalid of vectors.invalid) {
+    assert.equal(readEnvelopeTime(invalid), null, JSON.stringify(invalid));
+  }
+  for (const written of vectors.written) {
+    expectRead(written.text, written.instant === null ? undefined : Date.parse(written.instant));
+  }
+  for (const [time, text] of writtenTimes) {
+    expectRead(text, time.getTime());
+  }
+  // 九位小数截到毫秒、不进位：最晚的时刻不会进到 10000 年
+  assert.equal(readEnvelopeTime('9999-12-31T23:59:59.999999999Z')?.toISOString(), '9999-12-31T23:59:59.999Z');
+  assert.equal(readEnvelopeTime('2026-11-25T03:25:00.1234567+00:00')?.toISOString(), '2026-11-25T03:25:00.123Z');
 });
 
 test('运行时的消息键、参数、错误码、en-US 模板与固定的 reason 遵循 plugin-messages.json（invocation.md §8）', () => {
@@ -1880,37 +1945,67 @@ test('HandleEvent：信封与方式先核对，找不到订阅为 plugins.event.
   }
 });
 
-test('HandleEvent：data_schema 原样交给处理器，空串是没有，带空白、不是 URI 的也不裁剪不核对（invocation.md §4，ADR-0305）', async () => {
-  const seen: string[] = [];
+test('HandleEvent：time 读成 Date、data_schema 原样交给处理器；time 读不出为 InvalidArgument，在找订阅之前（invocation.md §4）', async () => {
+  const seen: { time: Date | undefined; dataSchema: string }[] = [];
   const plugin = await launch({
     subscriptions: [
       {
         topic: 'probe.events',
         handler: (_context, envelope) => {
-          seen.push(envelope.dataSchema);
+          seen.push({ time: envelope.time, dataSchema: envelope.dataSchema });
           return Result.success();
         },
       },
     ],
   });
+  /** 投递一条带 time 与 data_schema 的消息 */
+  const send = (topic: string, time: string, dataSchema = '') =>
+    unary<pb.HandleEventResponse>((done) =>
+      plugin.client.handleEvent(
+        pb.HandleEventRequest.fromPartial({
+          envelope: {
+            topic,
+            id: 'm-1',
+            source: 'urn:test',
+            type: 'probe.happened',
+            specVersion: '1.0',
+            time,
+            dataSchema,
+          },
+          attempt: 1,
+          mode: 'competing',
+        }),
+        sessionMetadata(),
+        done,
+      ),
+    );
   try {
     await startPlugin(plugin.client);
-    const schemas = ['', 'https://schemas.example.com/orders/v1.json', ' not a uri ', '\t'];
-    for (const dataSchema of schemas) {
-      const response = await unary<pb.HandleEventResponse>((done) =>
-        plugin.client.handleEvent(
-          pb.HandleEventRequest.fromPartial({
-            envelope: { topic: 'probe.events', id: 'm-1', source: 'urn:test', type: 'probe.happened', dataSchema },
-            attempt: 1,
-            mode: 'competing',
-          }),
-          sessionMetadata(),
-          done,
-        ),
-      );
-      assert.equal(response.status?.ok, true, dataSchema);
+    const deliveries: readonly (readonly [string, string])[] = [
+      ['2026-11-25T11:25:00.5000000+08:00', ''],
+      ['', 'https://schemas.example.com/orders/v1.json'],
+      ['2026-11-25T03:25:00.123456789Z', ' not a uri '],
+      ['0001-01-01T00:00:00Z', '\t'],
+    ];
+    for (const [time, schema] of deliveries) {
+      assert.equal((await send('probe.events', time, schema)).status?.ok, true, time);
     }
-    assert.deepEqual(seen, schemas);
+    assert.deepEqual(
+      seen.map((entry) => [entry.time?.toISOString(), entry.dataSchema]),
+      [
+        ['2026-11-25T03:25:00.500Z', ''],
+        [undefined, 'https://schemas.example.com/orders/v1.json'],
+        ['2026-11-25T03:25:00.123Z', ' not a uri '],
+        ['0001-01-01T00:00:00.000Z', '\t'],
+      ],
+    );
+    // 主题没有订阅也是 InvalidArgument：time 在找订阅之前核对
+    for (const topic of ['probe.events', 'nobody.listens']) {
+      for (const time of ['2026-12-31T23:59:60Z', '2026-11-25T03:25:00', '2026-11-25T03:25:00.1234567890Z']) {
+        await rejectsWith(send(topic, time), status.INVALID_ARGUMENT);
+      }
+    }
+    assert.equal(seen.length, deliveries.length, 'an unreadable time never reaches a handler');
   } finally {
     await plugin.close();
   }
@@ -2197,29 +2292,31 @@ function publishing(envelopes: readonly Envelope[]): OperationRegistry {
   return registry;
 }
 
-test('Host.publish 把 dataSchema 原样写进 data_schema，没有写空串（invocation.md §4，ADR-0305）', async () => {
+test('Host.publish 把 time 换算成 UTC 写出、没有写空串，dataSchema 原样写进 data_schema；越界的时刻照写给宿主（invocation.md §4）', async () => {
   const host = await fakeHost({});
   const base = { topic: 'probe.events', source: 'urn:test', type: 'probe.happened' };
   const plugin = await launch(
     {
       registry: publishing([
-        { ...base, id: 'e-0', dataSchema: 'urn:example:orders:v1' },
+        { ...base, id: 'e-0', time: new Date('2026-11-25T11:25:00.25+08:00'), dataSchema: 'urn:example:orders:v1' },
         { ...base, id: 'e-1' },
-        { ...base, id: 'e-2', dataSchema: ' not a uri ' },
+        { ...base, id: 'e-2', time: undefined, dataSchema: ' not a uri ' },
+        { ...base, id: 'e-3', time: new Date('+010000-01-01T00:00:00Z') },
       ]),
     },
     { XIHAN_PLUGIN_HOST_ADDRESS: host.address },
   );
   try {
     await startPlugin(plugin.client);
-    assert.deepEqual(payloadOf(await invoke(plugin.client, 'probes.publish', '{}')), ['ok', 'ok', 'ok']);
+    assert.deepEqual(payloadOf(await invoke(plugin.client, 'probes.publish', '{}')), ['ok', 'ok', 'ok', 'ok']);
     const publish = host.received.at(-1)?.request as pb.PublishRequest;
     assert.deepEqual(
-      publish.envelopes.map((envelope) => [envelope.id, envelope.dataSchema]),
+      publish.envelopes.map((envelope) => [envelope.id, envelope.time, envelope.dataSchema]),
       [
-        ['e-0', 'urn:example:orders:v1'],
-        ['e-1', ''],
-        ['e-2', ' not a uri '],
+        ['e-0', '2026-11-25T03:25:00.25Z', 'urn:example:orders:v1'],
+        ['e-1', '', ''],
+        ['e-2', '', ' not a uri '],
+        ['e-3', '+010000-01-01T00:00:00Z', ''],
       ],
     );
   } finally {
