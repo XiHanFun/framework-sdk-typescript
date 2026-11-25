@@ -408,6 +408,8 @@ export interface Envelope {
   data: Uint8Array;
   /** 扩展属性。 */
   extensions: Map<string, string>;
+  /** `dataschema`（URI，取值规则见 RFC-0009「信封」）；可空。同一协议版本里的新增字段，较早的对端忽略它（invocation.md §4）。 */
+  dataSchema: string;
 }
 
 export interface Envelope_ExtensionsEntry {
@@ -2741,6 +2743,7 @@ function createBaseEnvelope(): Envelope {
     dataContentType: "",
     data: new Uint8Array(0),
     extensions: new Map(),
+    dataSchema: "",
   };
 }
 
@@ -2776,6 +2779,9 @@ export const Envelope: MessageFns<Envelope> = {
     message.extensions.forEach((value, key) => {
       Envelope_ExtensionsEntry.encode({ key: key as any, value }, writer.uint32(82).fork()).join();
     });
+    if (message.dataSchema !== "") {
+      writer.uint32(90).string(message.dataSchema);
+    }
     return writer;
   },
 
@@ -2875,6 +2881,14 @@ export const Envelope: MessageFns<Envelope> = {
             }
             continue;
           }
+          case 11: {
+            if (tag !== 90) {
+              break;
+            }
+
+            message.dataSchema = reader.string();
+            continue;
+          }
         }
         if ((tag & 7) === 4 || tag === 0) {
           break;
@@ -2910,6 +2924,7 @@ export const Envelope: MessageFns<Envelope> = {
       });
       return m;
     })();
+    message.dataSchema = object.dataSchema ?? "";
     return message;
   },
 };

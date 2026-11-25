@@ -1880,6 +1880,42 @@ test('HandleEvent：信封与方式先核对，找不到订阅为 plugins.event.
   }
 });
 
+test('HandleEvent：data_schema 原样交给处理器，空串是没有，带空白、不是 URI 的也不裁剪不核对（invocation.md §4，ADR-0305）', async () => {
+  const seen: string[] = [];
+  const plugin = await launch({
+    subscriptions: [
+      {
+        topic: 'probe.events',
+        handler: (_context, envelope) => {
+          seen.push(envelope.dataSchema);
+          return Result.success();
+        },
+      },
+    ],
+  });
+  try {
+    await startPlugin(plugin.client);
+    const schemas = ['', 'https://schemas.example.com/orders/v1.json', ' not a uri ', '\t'];
+    for (const dataSchema of schemas) {
+      const response = await unary<pb.HandleEventResponse>((done) =>
+        plugin.client.handleEvent(
+          pb.HandleEventRequest.fromPartial({
+            envelope: { topic: 'probe.events', id: 'm-1', source: 'urn:test', type: 'probe.happened', dataSchema },
+            attempt: 1,
+            mode: 'competing',
+          }),
+          sessionMetadata(),
+          done,
+        ),
+      );
+      assert.equal(response.status?.ok, true, dataSchema);
+    }
+    assert.deepEqual(seen, schemas);
+  } finally {
+    await plugin.close();
+  }
+});
+
 // ── 回调 ─────────────────────────────────────────────────────────────────────
 
 /** 扮演宿主的回调服务收到的一次请求 */
@@ -2139,6 +2175,53 @@ test('回调的本地核对按宿主的顺序：权限要声明且授予，租�
       ],
     );
     assert.equal(publish.metadata?.baggage.get(BaggageKey.Tenant), 't1');
+  } finally {
+    await plugin.close();
+    host.close();
+  }
+});
+
+/** 只登记 `probes.publish` 的操作表：把给定的信封经 `Host.publish` 发出，载荷是逐项结果 */
+function publishing(envelopes: readonly Envelope[]): OperationRegistry {
+  const registry = new OperationRegistry();
+  registry.add({
+    contract: defineContract<unknown, JsonValue>({ id: 'probes.publish', expose: [] }),
+    request: RequestShape.object({}),
+    handler: async (context) => {
+      const host = findHost(context);
+      assert.ok(host !== undefined, 'the runtime always attaches the host client');
+      const results = await host.publish(context, envelopes);
+      return Result.ok(results.map((result) => (result.ok ? 'ok' : describeError(result.error))));
+    },
+  });
+  return registry;
+}
+
+test('Host.publish 把 dataSchema 原样写进 data_schema，没有写空串（invocation.md §4，ADR-0305）', async () => {
+  const host = await fakeHost({});
+  const base = { topic: 'probe.events', source: 'urn:test', type: 'probe.happened' };
+  const plugin = await launch(
+    {
+      registry: publishing([
+        { ...base, id: 'e-0', dataSchema: 'urn:example:orders:v1' },
+        { ...base, id: 'e-1' },
+        { ...base, id: 'e-2', dataSchema: ' not a uri ' },
+      ]),
+    },
+    { XIHAN_PLUGIN_HOST_ADDRESS: host.address },
+  );
+  try {
+    await startPlugin(plugin.client);
+    assert.deepEqual(payloadOf(await invoke(plugin.client, 'probes.publish', '{}')), ['ok', 'ok', 'ok']);
+    const publish = host.received.at(-1)?.request as pb.PublishRequest;
+    assert.deepEqual(
+      publish.envelopes.map((envelope) => [envelope.id, envelope.dataSchema]),
+      [
+        ['e-0', 'urn:example:orders:v1'],
+        ['e-1', ''],
+        ['e-2', ' not a uri '],
+      ],
+    );
   } finally {
     await plugin.close();
     host.close();

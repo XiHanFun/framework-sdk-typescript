@@ -271,6 +271,13 @@ export interface Envelope {
   readonly time?: string;
   /** CloudEvents `datacontenttype`；发布时缺省为 `application/json` */
   readonly dataContentType?: string;
+  /**
+   * CloudEvents `dataschema`（数据遵循的模式，URI）；省略或空串表示没有
+   *
+   * @remarks
+   * 原样写给宿主、原样交给处理器（invocation.md §4，ADR-0305）：SDK 不裁剪、不核对 URI 语法，只有空白的值由宿主拒绝那一项
+   */
+  readonly dataSchema?: string;
   /** CloudEvents `data`：字节，或按 UTF-8 编码的文本 */
   readonly data?: Uint8Array | string;
   /** 扩展属性，如 `xihantenant`、`traceparent` */
@@ -285,12 +292,14 @@ export interface DeliveredEnvelope extends Envelope {
   readonly subject: string;
   readonly time: string;
   readonly dataContentType: string;
+  /** 宿主写来的 `data_schema`，空串表示没有 */
+  readonly dataSchema: string;
   readonly data: Uint8Array;
   readonly extensions: Readonly<Record<string, string>>;
 }
 
 /**
- * 把信封编码为协议消息；规范版本与内容类型取缺省值
+ * 把信封编码为协议消息；规范版本与内容类型取缺省值，`dataSchema` 原样写进 `data_schema`（没有即空串）
  *
  * @internal
  */
@@ -306,11 +315,12 @@ export function toProtoEnvelope(envelope: Envelope): pb.Envelope {
     dataContentType: envelope.dataContentType || 'application/json',
     data: toBytes(envelope.data),
     extensions: new Map(Object.entries(envelope.extensions ?? {})),
+    dataSchema: envelope.dataSchema ?? '',
   };
 }
 
 /**
- * 把协议消息还原为信封
+ * 把协议消息还原为信封；`data_schema` 原样交出（空串即没有）
  *
  * @internal
  */
@@ -328,6 +338,7 @@ export function fromProtoEnvelope(envelope: pb.Envelope): DeliveredEnvelope {
     subject: envelope.subject,
     time: envelope.time,
     dataContentType: envelope.dataContentType,
+    dataSchema: envelope.dataSchema,
     data: envelope.data,
     extensions: Object.freeze(extensions),
   });
