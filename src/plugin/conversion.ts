@@ -31,19 +31,19 @@ const utf8 = new TextEncoder();
 const utf8Decoder = new TextDecoder('utf-8');
 
 /**
- * 把字符串或字节换成 UTF-8 字节
+ * 原样交出字节；没有时是空字节
+ *
+ * @remarks
+ * 只收字节：要发出的字符串一律经 {@link toStrictUtf8}，不经 `TextEncoder` 把孤立的代理项换成 U+FFFD（ADR-0315）
  *
  * @internal
  */
-export function toBytes(value: string | Uint8Array | undefined): Uint8Array {
-  if (value === undefined) {
-    return new Uint8Array();
-  }
-  return typeof value === 'string' ? utf8.encode(value) : value;
+export function toBytes(value: Uint8Array | undefined): Uint8Array {
+  return value ?? new Uint8Array();
 }
 
 /**
- * 把字符串严格编码成 UTF-8（RFC-0001「JSON 文本」的写出与转交，ADR-0312）；有孤立的代理项、编码不成时为 `undefined`
+ * 把字符串严格编码成 UTF-8（RFC-0001「JSON 文本」的写出与转交，ADR-0312、ADR-0315）；有孤立的代理项、编码不成时为 `undefined`
  *
  * @remarks
  * `TextEncoder` 把孤立的代理项换成 U+FFFD 照样编码，得到的是另一份文本，所以先逐个码元核对代理项成对。
@@ -310,7 +310,13 @@ export interface Envelope {
    * 原样写给宿主、原样交给处理器（invocation.md §4，ADR-0305）：SDK 不裁剪、不核对 URI 语法，只有空白的值由宿主拒绝那一项
    */
   readonly dataSchema?: string;
-  /** CloudEvents `data`：字节，或按 UTF-8 编码的文本 */
+  /**
+   * CloudEvents `data`：字节，或按 UTF-8 编码的文本
+   *
+   * @remarks
+   * 文本发布时严格编码成 UTF-8：有孤立的代理项时那一项不发出，在本地以 `MESSAGING_VALIDATION_002` + `messaging.envelope.invalid`
+   * 失败，不换成 U+FFFD 照发；字节原样发出（invocation.md §5，ADR-0315）
+   */
   readonly data?: Uint8Array | string;
   /** 扩展属性，如 `xihantenant`、`traceparent` */
   readonly extensions?: Readonly<Record<string, string>>;
@@ -341,9 +347,17 @@ export interface DeliveredEnvelope extends Envelope {
 /**
  * 把信封编码为协议消息；规范版本与内容类型取缺省值，`dataSchema` 原样写进 `data_schema`（没有即空串）
  *
+ * @remarks
+ * 字符串的 `data` 严格编码成 UTF-8，有孤立的代理项、编码不成时整个信封为 `undefined`，由 `Host.publish` 让那一项在本地失败
+ * （plugin/invocation.md §5，ADR-0315）；字节的 `data` 原样写出，没有即空字节
+ *
  * @internal
  */
-export function toProtoEnvelope(envelope: Envelope): pb.Envelope {
+export function toProtoEnvelope(envelope: Envelope): pb.Envelope | undefined {
+  const data = typeof envelope.data === 'string' ? toStrictUtf8(envelope.data) : toBytes(envelope.data);
+  if (data === undefined) {
+    return undefined;
+  }
   return {
     topic: envelope.topic,
     id: envelope.id,
@@ -353,7 +367,7 @@ export function toProtoEnvelope(envelope: Envelope): pb.Envelope {
     subject: envelope.subject ?? '',
     time: envelope.time === undefined ? '' : formatEnvelopeTime(envelope.time),
     dataContentType: envelope.dataContentType || 'application/json',
-    data: toBytes(envelope.data),
+    data,
     extensions: new Map(Object.entries(envelope.extensions ?? {})),
     dataSchema: envelope.dataSchema ?? '',
   };

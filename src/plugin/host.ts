@@ -17,6 +17,7 @@ import {
 import {
   type CallbackRpc,
   callbackDenied,
+  dataNotUtf8,
   GrpcCode,
   hostUnavailable,
   mapCallbackStatus,
@@ -27,7 +28,7 @@ import {
   statusReason,
   tenantDenied,
 } from './errors.ts';
-import { HostClient, type InvokeResponse, type PublishResponse } from './gen/plugin.ts';
+import { HostClient, type InvokeResponse, type Envelope as ProtoEnvelope, type PublishResponse } from './gen/plugin.ts';
 import { CallbackPermission, type PluginEndpoint, PluginProtocol } from './protocol.ts';
 
 /**
@@ -115,7 +116,8 @@ export function attachHost(context: InvocationContext, host: Host): void {
  * `Configure` 的 `granted_permissions` 里，否则 `plugins.callback.denied`；上下文的 `xihan.tenant` 必须是插件此刻正在处理的
  * 某个调用或投递的租户，否则 `plugins.callback.tenant_denied`；上下文的截止时间已过或已被取消时也不发请求，结果与
  * 映射表的 `DeadlineExceeded`、「`Cancelled`，取消信号已触发」两行相同；最后，以字符串给出的 `Host.Invoke` 载荷编码不成 UTF-8
- * 时不发请求，`kernel.operation.invalid_payload`（ADR-0312）。每次回调都在元数据 `xihan-plugin-session` 里带会话令牌，
+ * 时不发请求，`kernel.operation.invalid_payload`（ADR-0312），以字符串给出的信封 `data` 编码不成 UTF-8 的那一项不发出，
+ * `messaging.envelope.invalid`（ADR-0315）。每次回调都在元数据 `xihan-plugin-session` 里带会话令牌，
  * 宿主以插件身份执行（主体 ID 为清单 ID）。连接是惰性的，第一次回调才建立
  */
 export class Host {
@@ -185,38 +187,63 @@ export class Host {
    *
    * @remarks
    * 批量：一次调用发出全部信封，结果与 `envelopes` 一一对应；空集合不发出调用、返回空数组，重复的信封照样逐项发出。
-   * 本地的权限与上下文租户核对、没有可用的回调端点与 RPC 失败都是整批的结果，每一项都是同一个错误。信封的 `xihantenant`
+   * 本地的权限与上下文租户核对、截止时间已过或已被取消、没有可用的回调端点都是整批的结果，每一项都是同一个错误。
+   * 整批的核对都通过之后逐项编码：以字符串给出的 `data` 严格编码成 UTF-8，有孤立的代理项的那一项不发出，结果是
+   * `MESSAGING_VALIDATION_002` + `messaging.envelope.invalid`（`reason` 为 `the data has a lone surrogate and cannot be encoded as UTF-8`），
+   * 其余各项照常组成一次请求，结果放回各自原来的位置；每一项都编码不成时不发请求（ADR-0315）。信封的 `xihantenant`
    * 不在本地核对，由宿主逐项判定（宿主在它之前还核对发布器与主题，本地先判会改变错误的先后，invocation.md §5）。
-   * 宿主返回的结果数与信封数不同时，每一项都是 `PLUGINS_UNEXPECTED_001` + `plugins.process.failed`（`phase` 为 `publish`）。
-   * 上下文的信号在途中触发即取消整批，结果按上面的表归因
+   * 请求的 RPC 失败是发出的各项的结果；宿主返回的结果数与发出的信封数不同时，发出的每一项都是
+   * `PLUGINS_UNEXPECTED_001` + `plugins.process.failed`（`phase` 为 `publish`）。上下文的信号在途中触发即取消这次请求，结果按上面的表归因
    */
   async publish(context: InvocationContext, envelopes: readonly Envelope[]): Promise<Result<void>[]> {
     if (envelopes.length === 0) {
       return [];
     }
-    const reply = await this.#call<readonly Envelope[], PublishResponse>(
+    // 编码不读时钟、不连宿主，提前算好不改变核对的先后；结果在整批的核对之后才用到
+    const encoded = envelopes.map(toProtoEnvelope);
+    const batch = encoded.filter((envelope): envelope is ProtoEnvelope => envelope !== undefined);
+    // #call 在整批的本地核对都通过之后才调用 prepare：没调用即整批不合，每一项都是整批的那个错误，不论 data 编不编得成
+    const local = { checked: false };
+    const reply = await this.#call<ProtoEnvelope[], PublishResponse>(
       context,
       'publish',
       'publish',
       CallbackPermission.Publish,
-      () => Result.ok(envelopes),
-      (client, batch, metadata, options, done) =>
-        client.publish(
-          { envelopes: batch.map(toProtoEnvelope), metadata: metadataFromContext(context) },
-          metadata,
-          options,
-          done,
-        ),
+      () => {
+        local.checked = true;
+        return batch.length === 0 ? Result.fail(dataNotUtf8()) : Result.ok(batch);
+      },
+      (client, sent, metadata, options, done) =>
+        client.publish({ envelopes: sent, metadata: metadataFromContext(context) }, metadata, options, done),
     );
-    if (!reply.ok) {
+    if (!reply.ok && !local.checked) {
       return envelopes.map(() => Result.fail(reply.error));
     }
-    const results = reply.value.results;
-    if (results.length !== envelopes.length) {
-      const failure = processFailed(this.#pluginId, 'publish', resultCountReason(results.length, envelopes.length));
-      return envelopes.map(() => Result.fail(failure));
+    // 发出的各项的结果：请求失败（RPC 失败、客户端已关闭）时都是那个错误，结果数按实际发出的信封数核对
+    let outcome: (index: number) => Result<void>;
+    if (!reply.ok) {
+      outcome = () => Result.fail(reply.error);
+    } else if (reply.value.results.length !== batch.length) {
+      const failure = processFailed(
+        this.#pluginId,
+        'publish',
+        resultCountReason(reply.value.results.length, batch.length),
+      );
+      outcome = () => Result.fail(failure);
+    } else {
+      const results = reply.value.results;
+      outcome = (index) => fromStatus(results[index], this.#pluginId, 'publish');
     }
-    return results.map((status) => fromStatus(status, this.#pluginId, 'publish'));
+    // 结果放回各自原来的位置；编码不成的那一项没有发出，是它自己的错误
+    const notEncoded = dataNotUtf8();
+    let sent = -1;
+    return encoded.map((envelope) => {
+      if (envelope === undefined) {
+        return Result.fail(notEncoded);
+      }
+      sent += 1;
+      return outcome(sent);
+    });
   }
 
   /**
@@ -232,7 +259,7 @@ export class Host {
    * 发出之前的本地核对（invocation.md §5），依次：① 有没有可用的回调端点（由 {@link Host.#call} 先核对，它要拿端点去连）；
    * 按宿主的顺序 ② 权限、③ 上下文的租户；④ 上下文的截止时间已过或已被取消，结果与映射表相应的一行相同
    * （截止时间已过按 `DeadlineExceeded`，已被取消按「`Cancelled`，取消信号已触发」）。都通过时为 `undefined`；
-   * 之后 {@link Host.#call} 再准备请求（⑤ 载荷编码成 UTF-8），客户端已经关闭的最后按连不上宿主
+   * 之后 {@link Host.#call} 再准备请求（⑤ 载荷或信封的 `data` 编码成 UTF-8），客户端已经关闭的最后按连不上宿主
    */
   #refusal(context: InvocationContext, rpc: CallbackRpc, operation: string, permission: string): ErrorInfo | undefined {
     if (!this.#permitted(permission)) {
@@ -281,7 +308,8 @@ export class Host {
     if (refusal !== undefined) {
       return Promise.resolve(Result.fail(refusal));
     }
-    // 权限、租户与截止时间之后才准备请求：载荷编码不成相当于宿主在管道的 Validate 阶段才发现的错误，排在它们之后（ADR-0312）
+    // 权限、租户与截止时间之后才准备请求：载荷编码不成相当于宿主在管道的 Validate 阶段才发现的错误，信封的 data 编码不成
+    // 相当于宿主逐项转换信封时的错误，都排在整批的核对之后（ADR-0312、ADR-0315）
     const request = prepare();
     if (!request.ok) {
       return Promise.resolve(Result.fail(request.error));

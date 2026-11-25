@@ -688,7 +688,7 @@ test('信封的 time 按毫秒精度写出与读入遵循 sdk-envelope-times.jso
     // 作者给的时刻按 SDK 读宿主文本的读法构造：Date 没有偏移、只到毫秒，更细的小数截去；再经发布的写出路径写成文本
     const time = writing.instant === null ? undefined : readEnvelopeTime(writing.instant);
     assert.notEqual(time, null, `${writing.name}: the instant must be read`);
-    assert.equal(toProtoEnvelope({ ...base, time: time ?? undefined }).time, writing.text.milliseconds, writing.name);
+    assert.equal(toProtoEnvelope({ ...base, time: time ?? undefined })?.time, writing.text.milliseconds, writing.name);
   }
   for (const reading of vectors.reading) {
     // 投递的读入路径：期望的时刻已截到毫秒，纪元之前的也不晚于原文
@@ -2729,6 +2729,164 @@ test('Host.invoke 的字符串载荷严格编码成 UTF-8：孤立的代理项�
     } finally {
       await denied.close();
     }
+  } finally {
+    host.close();
+  }
+});
+
+test('Host.publish 的字符串 data 严格编码成 UTF-8：编不成的那一项在本地失败、其余照常发出并放回原位，全都编不成不发请求；整批的核对先于它（invocation.md §5，ADR-0315）', async () => {
+  let reply: pb.PublishResponse | { code: number; details: string } | undefined;
+  const host = await fakeHost({
+    publish: (request) => reply ?? { results: request.envelopes.map(() => ({ ok: true, error: undefined })) },
+  });
+  const high = String.fromCharCode(0xd83d);
+  const low = String.fromCharCode(0xde00);
+  // 单独的高代理项、单独的低代理项、颠倒的一对、文本末尾的高代理项
+  const loneHigh = `{"x":"${high}"}`;
+  const loneLow = `{"x":"${low}"}`;
+  const reversed = `{"x":"${low}${high}"}`;
+  const trailing = `{"x":"a"}${high}`;
+  const paired = `{"x":"${high}${low}"}`;
+  // 字节原样发出：不合法的 UTF-8 由宿主核对
+  const bytes = new Uint8Array([0x7b, 0x22, 0x78, 0x22, 0x3a, 0x22, 0xed, 0xa0, 0x80, 0x22, 0x7d]);
+  const base = { topic: 'probe.events', source: 'urn:test', type: 'probe.happened' };
+  const notEncoded = {
+    code: 'MESSAGING_VALIDATION_002',
+    key: 'messaging.envelope.invalid',
+    details: { reason: 'the data has a lone surrogate and cannot be encoded as UTF-8' },
+  };
+  const outcomes = (results: readonly Result<void>[]) =>
+    results.map((result) => (result.ok ? 'ok' : describeError(result.error)));
+  const keys = (results: readonly Result<void>[]) => results.map((result) => !result.ok && result.error.messageKey);
+  // 一项编不成、两项照发
+  const trio: Envelope[] = [
+    { ...base, id: 'a', data: '{}' },
+    { ...base, id: 'b', data: loneHigh },
+    { ...base, id: 'c', data: '{}' },
+  ];
+  // 扮演宿主的服务在任何断言失败时也要关掉，否则它让测试进程一直不退出
+  try {
+    const plugin = await launch({}, { XIHAN_PLUGIN_HOST_ADDRESS: host.address });
+    try {
+      await startPlugin(plugin.client);
+      await invoke(plugin.client, 'probes.context');
+      const callback = findHost(plugin.probe.lastContext as InvocationContext);
+      assert.ok(callback !== undefined);
+      const context = InvocationContext.create({});
+
+      const mixed: Envelope[] = [
+        { ...base, id: 'e-0', data: '{}' },
+        { ...base, id: 'e-1', data: loneHigh },
+        { ...base, id: 'e-2', data: paired },
+        { ...base, id: 'e-3', data: loneLow },
+        { ...base, id: 'e-4', data: bytes },
+        { ...base, id: 'e-5', data: reversed },
+        { ...base, id: 'e-6' },
+        { ...base, id: 'e-7', data: trailing },
+      ];
+      assert.deepEqual(outcomes(await callback.publish(context, mixed)), [
+        'ok',
+        notEncoded,
+        'ok',
+        notEncoded,
+        'ok',
+        notEncoded,
+        'ok',
+        notEncoded,
+      ]);
+      const sent = host.received.at(-1)?.request as pb.PublishRequest;
+      assert.deepEqual(
+        sent.envelopes.map((envelope) => [envelope.id, Buffer.from(envelope.data)]),
+        [
+          ['e-0', Buffer.from('{}')],
+          ['e-2', Buffer.from(paired, 'utf8')],
+          ['e-4', Buffer.from(bytes)],
+          ['e-6', Buffer.alloc(0)],
+        ],
+      );
+
+      // 每一项都编码不成时不发请求
+      const before = host.received.length;
+      const lone = [loneHigh, loneLow, reversed, trailing].map((data, index) => ({ ...base, id: `l-${index}`, data }));
+      assert.deepEqual(outcomes(await callback.publish(context, lone)), [
+        notEncoded,
+        notEncoded,
+        notEncoded,
+        notEncoded,
+      ]);
+      assert.equal(host.received.length, before, 'nothing is sent when no envelope can be encoded');
+
+      // 结果数按实际发出的信封数核对；RPC 失败只落在发出的那几项上
+      reply = { results: [{ ok: true, error: undefined }] };
+      const countFailure = {
+        code: PluginErrorCode.Unexpected,
+        key: PluginMessageKey.Failed,
+        details: { id: pluginId, phase: 'publish', reason: 'the host returned 1 results for 2 envelopes' },
+      };
+      assert.deepEqual(outcomes(await callback.publish(context, trio)), [countFailure, notEncoded, countFailure]);
+      reply = { code: status.INTERNAL, details: 'boom' };
+      const rpcFailure = describeError(
+        mapCallbackStatus('publish', status.INTERNAL, 'boom', false, pluginId, 'publish'),
+      );
+      assert.deepEqual(outcomes(await callback.publish(context, trio)), [rpcFailure, notEncoded, rpcFailure]);
+      reply = undefined;
+
+      // 租户、截止时间与取消先于逐项的编码：每一项都是整批的那个错误，编不成的那一项也一样，不发请求
+      const received = host.received.length;
+      const foreign = await callback.publish(context.withBaggage(BaggageKey.Tenant, 't9'), trio);
+      assert.deepEqual(keys(foreign), Array(3).fill(PluginMessageKey.TenantDenied));
+      const expired = await callback.publish(InvocationContext.create({ deadline: Date.now() - 1000 }), trio);
+      assert.deepEqual(keys(expired), Array(3).fill('kernel.invocation.deadline_exceeded'));
+      const controller = new AbortController();
+      controller.abort();
+      const cancelled = await callback.publish(InvocationContext.create({ signal: controller.signal }), trio);
+      assert.deepEqual(keys(cancelled), Array(3).fill('kernel.invocation.cancelled'));
+      assert.equal(host.received.length, received, 'batches refused locally are never sent');
+
+      // 客户端已经关闭排在编码之后：发出的那几项连不上宿主，编不成的那一项仍是它自己的错误
+      callback.close();
+      const closed = outcomes(await callback.publish(context, trio));
+      assert.deepEqual(closed[1], notEncoded);
+      for (const outcome of [closed[0], closed[2]]) {
+        assert.equal((outcome as { key: string }).key, PluginMessageKey.HostUnavailable);
+      }
+    } finally {
+      await plugin.close();
+    }
+    // 权限先于编码
+    const denied = await launch({}, { XIHAN_PLUGIN_HOST_ADDRESS: host.address });
+    try {
+      await startPlugin(denied.client, '{}', []);
+      await invoke(denied.client, 'probes.context');
+      const callback = findHost(denied.probe.lastContext as InvocationContext);
+      assert.ok(callback !== undefined);
+      assert.deepEqual(
+        keys(await callback.publish(InvocationContext.create({}), trio)),
+        Array(3).fill(PluginMessageKey.CallbackDenied),
+      );
+    } finally {
+      await denied.close();
+    }
+    // 没有可用的回调端点先于编码
+    const nowhere = await launch({});
+    try {
+      await startPlugin(nowhere.client);
+      await invoke(nowhere.client, 'probes.context');
+      const callback = findHost(nowhere.probe.lastContext as InvocationContext);
+      assert.ok(callback !== undefined);
+      const results = await callback.publish(InvocationContext.create({}), trio);
+      assert.deepEqual(
+        results.map((result) => !result.ok && describeError(result.error)),
+        Array(3).fill({
+          code: PluginErrorCode.Unavailable,
+          key: PluginMessageKey.HostUnavailable,
+          details: { id: pluginId, reason: 'no supported callback endpoint' },
+        }),
+      );
+    } finally {
+      await nowhere.close();
+    }
+    assert.equal(host.received.filter((entry) => entry.method === 'publish').length, 3, 'only three batches were sent');
   } finally {
     host.close();
   }

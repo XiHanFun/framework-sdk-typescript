@@ -43,7 +43,40 @@ export function payloadNotUtf8(operation: string): ErrorInfo {
 }
 
 /**
- * `Host.Publish` 的结果数与信封数不同时的 `reason`（invocation.md §5）
+ * 宿主转换不了信封时的错误码（RFC-0009，conventions/error-codes.md）；以字符串给出的 `data` 编码不成时本地用同一个码
+ *
+ * @internal
+ */
+export const envelopeInvalidCode = 'MESSAGING_VALIDATION_002';
+
+/**
+ * 宿主转换不了信封时的消息键，参数只有 `reason`；以字符串给出的 `data` 编码不成时本地用同一个键
+ *
+ * @internal
+ */
+export const envelopeInvalidKey = 'messaging.envelope.invalid';
+
+/**
+ * 以字符串给出的信封 `data` 有孤立的代理项、编码不成 UTF-8 时的 `reason`（invocation.md §5，ADR-0315）；不本地化
+ *
+ * @internal
+ */
+export const dataNotUtf8Reason = 'the data has a lone surrogate and cannot be encoded as UTF-8';
+
+/**
+ * 以字符串给出的信封 `data` 编码不成 UTF-8 时那一项的本地错误（invocation.md §5，ADR-0315）
+ *
+ * @remarks
+ * 与宿主转换不了信封时同一个码与键：`MESSAGING_VALIDATION_002` + `messaging.envelope.invalid`，`reason` 为 {@link dataNotUtf8Reason}
+ *
+ * @internal
+ */
+export function dataNotUtf8(): ErrorInfo {
+  return ErrorInfo.validation(envelopeInvalidCode, envelopeInvalidKey, { reason: dataNotUtf8Reason });
+}
+
+/**
+ * `Host.Publish` 的结果数与发出的信封数不同时的 `reason`（invocation.md §5）
  *
  * @internal
  */
