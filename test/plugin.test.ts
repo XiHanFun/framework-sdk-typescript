@@ -2556,6 +2556,22 @@ test('读入宿主写来的 Error 遵循 error-reading.json：cases 与插件一
   assert.equal(writeJson(underflow.details ?? {}), '{"id":"a","n":0.0}');
 });
 
+test('读入 Error 的 details：字符串里孤立的代理项按严格的 UTF-8 不合法，当作没有细节，不换成 U+FFFD 读出（RFC-0001「JSON 文本」）', () => {
+  const high = String.fromCharCode(0xd800);
+  const low = String.fromCharCode(0xdc00);
+  const base = { code: 'PROBES_VALIDATION_001', messageKey: 'probes.value.invalid', text: '', inner: undefined };
+  // 值里的高代理项、成员名里的高代理项、单独的低代理项：错误照常读入，只是没有细节
+  for (const details of [`{"a":"x${high}"}`, `{"${high}":"x"}`, `{"a":"${low}"}`]) {
+    const read = fromProtoError({ ...base, details }, pluginId);
+    assert.equal(read.code, base.code, JSON.stringify(details));
+    assert.equal(read.messageKey, base.messageKey);
+    assert.equal(read.details, undefined, JSON.stringify(details));
+  }
+  // 成对的代理项是合法的 Unicode，照常读出
+  const pair = String.fromCodePoint(0x1f600);
+  assert.deepEqual(fromProtoError({ ...base, details: `{"a":"${pair}"}` }, pluginId).details, { a: pair });
+});
+
 test('回调发出前依次核对：端点、权限、租户，最后截止时间已过或已被取消也不发请求，结果同映射表（invocation.md §5）', async () => {
   const host = await fakeHost({});
   const plugin = await launch({}, { XIHAN_PLUGIN_HOST_ADDRESS: host.address });
