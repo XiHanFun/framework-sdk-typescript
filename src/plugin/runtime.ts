@@ -20,7 +20,7 @@ import {
   readManifest,
 } from '../manifest/index.ts';
 import { type ManifestSource, readManifestBytes, readManifestSource } from '../manifest/node.ts';
-import { OperationErrorCode, OperationInvoker, OperationRegistry } from '../operation/index.ts';
+import { OperationErrorCode, OperationInvoker, OperationRegistry, type OperationResponse } from '../operation/index.ts';
 import { isAbort } from '../operation/invoker.ts';
 import type { PipelineBuilder } from '../pipeline/index.ts';
 import {
@@ -46,10 +46,10 @@ import {
   fromProtoEnvelope,
   messageOf,
   tenantOf,
-  toBytes,
   toProtoError,
   toProtoState,
   toStatus,
+  toStrictUtf8,
 } from './conversion.ts';
 import { type BoundEndpoint, bindEndpoint, callbackNetworks, defaultNetwork } from './endpoint.ts';
 import { eventUnsubscribed, PluginReason, processFailed, processUnavailable, thrownTypeName } from './errors.ts';
@@ -1184,7 +1184,8 @@ class PluginRuntime {
 
   /**
    * `Invoke`（invocation.md §1）：会话令牌之后依次核对，操作在握手声明里（否则 gRPC `Unimplemented`）、插件在可服务状态
-   * （否则 `PLUGINS_UNAVAILABLE_001` + `plugins.process.unavailable`），然后还原上下文、经调用器与完整管道执行，空载荷等同 `{}`
+   * （否则 `PLUGINS_UNAVAILABLE_001` + `plugins.process.unavailable`），然后还原上下文、经调用器与完整管道执行，空载荷等同 `{}`；
+   * 应答载荷严格编码成 UTF-8 写出（{@link invokeResponse}）
    */
   async #invoke(call: ServerUnaryCall<pb.InvokeRequest, pb.InvokeResponse>): Promise<pb.InvokeResponse> {
     const request = call.request;
@@ -1200,8 +1201,7 @@ class PluginRuntime {
     }
     return this.#track(call, request.metadata, async (context) => {
       try {
-        const response = await invoker.invoke(context, { id: request.operation, payload: request.payload });
-        return { status: toStatus(response.outcome), payload: toBytes(response.payload) };
+        return invokeResponse(await invoker.invoke(context, { id: request.operation, payload: request.payload }));
       } catch (error) {
         // 排在 Observe 内置步骤之前的中间件抛出的异常：调用方在进程外，交回未处理异常，不把异常消息写上线
         this.#logger.error('the invocation threw', { plugin: this.#id, operation: request.operation, error });
@@ -1331,4 +1331,23 @@ function unhandled(error: unknown): ErrorInfo {
     undefined,
     error instanceof FrameworkError ? error.toErrorInfo() : undefined,
   );
+}
+
+/**
+ * 把调用器的应答写成 `InvokeResponse`（invocation.md §1「插件一侧写出应答」，ADR-0315）
+ *
+ * @remarks
+ * 应答载荷是字符串，写进 `payload` 之前严格编码成 UTF-8：有孤立的代理项、编码不成即应答写不出，按 RFC-0011 规则 10 的「编码」处理，
+ * `KERNEL_UNEXPECTED_001` + `kernel.invocation.unhandled_exception`（没有参数），`payload` 为空，与类型化的响应写不出相同；
+ * 不像 `TextEncoder` 那样换成 U+FFFD 照发。失败的结果没有载荷
+ */
+function invokeResponse(response: OperationResponse): pb.InvokeResponse {
+  if (response.payload === undefined) {
+    return { status: toStatus(response.outcome), payload: new Uint8Array() };
+  }
+  const payload = toStrictUtf8(response.payload);
+  if (payload === undefined) {
+    return { status: toStatus(Result.fail(unhandled(undefined))), payload: new Uint8Array() };
+  }
+  return { status: toStatus(response.outcome), payload };
 }

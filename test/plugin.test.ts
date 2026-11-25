@@ -20,7 +20,7 @@ import {
   status,
 } from '@grpc/grpc-js';
 import { InvocationContext } from 'xihan-framework/invocation';
-import { defineContract, Expose, OperationRegistry, RequestShape } from 'xihan-framework/operation';
+import { defineContract, Expose, OperationInvoker, OperationRegistry, RequestShape } from 'xihan-framework/operation';
 import {
   CallbackPermission,
   ConfigurationSection,
@@ -2731,6 +2731,40 @@ test('Host.invoke 的字符串载荷严格编码成 UTF-8：孤立的代理项�
     }
   } finally {
     host.close();
+  }
+});
+
+test('Invoke 的应答载荷严格编码成 UTF-8：孤立的代理项即 KERNEL_UNEXPECTED_001 + unhandled_exception、载荷为空，成对的照常写出（invocation.md §1，ADR-0315）', async () => {
+  const high = String.fromCharCode(0xd83d);
+  const low = String.fromCharCode(0xde00);
+  let answer = '{}';
+  const original = OperationInvoker.prototype.invoke;
+  // 调用器经 writeJson 写出的载荷把孤立的代理项写成转义，运行时收到的总是合法的字符串：换掉调用器，直接交出带孤立代理项的字符串
+  OperationInvoker.prototype.invoke = async () => ({ outcome: Result.success(), payload: answer });
+  const plugin = await launch();
+  try {
+    await startPlugin(plugin.client);
+    // 单独的高代理项、单独的低代理项、颠倒的一对、文本末尾的高代理项
+    for (const text of [`{"x":"${high}"}`, `{"x":"${low}"}`, `{"x":"${low}${high}"}`, `{"x":"a"}${high}`]) {
+      answer = text;
+      const response = await invoke(plugin.client, 'probes.context');
+      assertFailure(
+        response.status,
+        'KERNEL_UNEXPECTED_001',
+        'kernel.invocation.unhandled_exception',
+        undefined,
+        JSON.stringify(text),
+      );
+      assert.equal(response.status?.error?.inner, undefined);
+      assert.equal(response.payload.length, 0, JSON.stringify(text));
+    }
+    answer = `{"x":"${high}${low}"}`;
+    const paired = await invoke(plugin.client, 'probes.context');
+    assert.equal(paired.status?.ok, true);
+    assert.deepEqual(Buffer.from(paired.payload), Buffer.from(answer, 'utf8'));
+  } finally {
+    OperationInvoker.prototype.invoke = original;
+    await plugin.close();
   }
 });
 
