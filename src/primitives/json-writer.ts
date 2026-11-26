@@ -144,7 +144,8 @@ export interface JsonWriteOptions {
    *
    * @remarks
    * 转义出的孤立代理项语法上合法，却不是 RFC-0001「JSON 文本」认的文本，XiHan 读取 JSON 的一方都会拒绝。操作的类型化响应用
-   * `reject`（RFC-0011 规则 10 的「编码」，ADR-0318）；RFC-0010 的模板与错误细节这类无类型的值照旧写成转义
+   * `reject`（RFC-0011 规则 10 的「编码」，ADR-0318），Result 与错误的线上编码、写给宿主的错误细节也用 `reject`
+   * （RFC-0001「写出与转交」，ADR-0320）；RFC-0010 的模板与日志这类诊断文本照旧写成转义
    */
   readonly loneSurrogates?: 'escape' | 'reject';
   /**

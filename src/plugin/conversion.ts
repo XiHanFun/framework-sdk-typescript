@@ -13,6 +13,7 @@ import {
   JsonNumber,
   type JsonObject,
   type JsonValue,
+  type JsonWriteOptions,
   type LifecycleState,
   lifecycleStateOrdinal,
   Result,
@@ -98,19 +99,49 @@ export function messageOf(error: ErrorInfo, locale: string = defaultLocale()): s
  * @remarks
  * `code`、`message_key` 原样；带消息键的错误 `text` 留空，由宿主按目录翻译成调用方的语言（RFC-0010），
  * 不按任何区域在插件里渲染，作者用 `withText` 填进去的文案也不写；只有自由文本错误（{@link ErrorInfo.literal}）写 `text`。
- * `details` 是按值模型写出的 JSON 对象文本，没有或为空时为空串；`inner` 同样写出
+ * `details` 是按值模型写出的 JSON 对象文本，没有或为空时为空串，写不出时也为空串（见 {@link writeDetails}）；`inner` 同样写出
  *
  * @internal
  */
 export function toProtoError(error: ErrorInfo): pb.Error {
-  const details = error.details;
   return {
     code: error.code,
     messageKey: error.messageKey ?? '',
     text: error.messageKey === undefined ? error.message : '',
-    details: details === undefined || Object.keys(details).length === 0 ? '' : writeJson(details),
+    details: writeDetails(error.details),
     inner: error.inner === undefined ? undefined : toProtoError(error.inner),
   };
+}
+
+/** 写错误细节的选项：孤立的代理项、超过 64 层与重复的成员名写不出，非有限的浮点仍按值模型写成字符串 */
+const detailsWriteOptions: JsonWriteOptions = Object.freeze({
+  nonFinite: 'string',
+  loneSurrogates: 'reject',
+  nesting: 'reject',
+  duplicateMembers: 'reject',
+});
+
+/**
+ * 写 `Error.details`：没有或为空时为空串
+ *
+ * @remarks
+ * 写不出时这个错误不带细节、为空串，其余字段照写（invocation.md §3「写出」、RFC-0001「写出与转交」，ADR-0320）：细节里的字符串
+ * （成员名与值）有孤立的代理项，或写出的文本没过共同检查（嵌套超过 64 层、重复的成员名）。不写成 `\ud800` 这样的转义：宿主读到
+ * 这样的细节也当作没有，两边看到的相同；内部错误的细节各自核对
+ */
+function writeDetails(details: JsonObject | undefined): string {
+  if (details === undefined || Object.keys(details).length === 0) {
+    return '';
+  }
+  try {
+    return writeJson(details, detailsWriteOptions);
+  } catch (error) {
+    // writeJson 写不出时抛 TypeError：细节不带出去，错误照常交给宿主；别的异常不是写不出，照常抛出
+    if (error instanceof TypeError) {
+      return '';
+    }
+    throw error;
+  }
 }
 
 /**

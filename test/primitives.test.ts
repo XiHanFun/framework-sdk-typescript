@@ -33,6 +33,7 @@ import {
   JsonMembers,
   type JsonNode,
   JsonNumber,
+  type JsonValue,
   LifecycleState,
   lifecycleStateFromOrdinal,
   lifecycleStateOrdinal,
@@ -927,7 +928,7 @@ test('writeJson 的 nesting 为 reject 时超过 64 层写不出，恰好 64 层
   ];
   for (const [what, value] of unwritable) {
     assert.throws(() => writeJson(value, strict), TypeError, what);
-    // 缺省照旧写出：RFC-0010 模板与错误细节用的写法不变
+    // 缺省照旧写出：RFC-0010 模板与日志用的写法不变
     assert.doesNotThrow(() => writeJson(value), what);
   }
   const deepest = `${'['.repeat(maxJsonDepth)}0${']'.repeat(maxJsonDepth)}`;
@@ -1078,6 +1079,55 @@ test('Result 的 toJSON：线上编码的形状，JSON.stringify 与 writeJson �
     ok: true,
     value: 5,
   });
+});
+
+test('Result 与 ErrorInfo 的线上编码以 reject 选项写出：孤立的代理项、从结果的根算起超过 64 层写不出，抛 TypeError（RFC-0001「写出与转交」，ADR-0320）', () => {
+  const wire = { loneSurrogates: 'reject', nesting: 'reject', duplicateMembers: 'reject' } as const;
+  const arrays = (depth: number): JsonValue => {
+    let value: JsonValue = 0;
+    for (let layer = 0; layer < depth; layer += 1) {
+      value = [value];
+    }
+    return value;
+  };
+  // 错误单独写是 64 层（根、细节、62 层数组），放进结果里多一层
+  const deepError = ErrorInfo.literal('ORDERS_CONFLICT_001', 'stale', { deep: arrays(62) });
+  assert.doesNotThrow(() => writeJson(deepError, wire));
+  const unwritable: [string, unknown][] = [
+    ['a lone surrogate in the value', Result.ok({ text: 'a\uD800' })],
+    ['a lone surrogate in a value name', Result.ok({ '\uDC00': 1 })],
+    ['a value 65 levels from the root', Result.ok(arrays(64))],
+    ['a lone surrogate in the message', Result.fail(ErrorInfo.literal('ORDERS_CONFLICT_001', '\uDFFF'))],
+    ['a lone surrogate in a detail', Result.fail(ErrorInfo.literal('ORDERS_CONFLICT_001', 'stale', { id: 'o\uD83D' }))],
+    ['an error 65 levels from the root', Result.fail(deepError)],
+    [
+      'a lone surrogate in an inner error',
+      ErrorInfo.literal(
+        'ORDERS_CONFLICT_001',
+        'stale',
+        undefined,
+        ErrorInfo.literal('KERNEL_UNEXPECTED_001', 'x\uDE00'),
+      ),
+    ],
+    [
+      'duplicate members in the value',
+      Result.ok(
+        new JsonMembers([
+          ['a', 1],
+          ['a', 2],
+        ]),
+      ),
+    ],
+  ];
+  for (const [what, value] of unwritable) {
+    assert.throws(() => writeJson(value, wire), TypeError, what);
+  }
+  assert.equal(writeJson(Result.ok(arrays(63)), wire), `{"ok":true,"value":${'['.repeat(63)}0${']'.repeat(63)}}`);
+  // 成对的代理项与真正的 U+FFFD 照常写出，非有限的浮点仍按值模型写成字符串
+  assert.equal(
+    writeJson(Result.ok({ nan: Number.NaN, r: '�', t: '汉字😀' }), wire),
+    '{"ok":true,"value":{"nan":"NaN","r":"�","t":"汉字😀"}}',
+  );
 });
 
 test('校验并原样返回：错误码、消息键与操作 ID', () => {

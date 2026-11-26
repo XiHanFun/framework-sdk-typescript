@@ -89,7 +89,8 @@ const context = InvocationContext.create({ timeout: 2000, baggage: { [BaggageKey
 const response = await invoker.invoke(context, { id: 'orders.create', payload: '{"quantity":2}' });
 // response.outcome.ok === true，response.payload === '{"id":"o-t1","quantity":2}'
 const typed = await invoker.invokeTyped(context, createOrder, { quantity: 3 }); // Result<OrderCreated>
-const wire = writeJson(typed); // 线上编码：数字按值模型写，不用 JSON.stringify
+// 线上编码：数字按值模型写，不用 JSON.stringify；写出对方读不进的文本时抛 TypeError
+const wire = writeJson(typed, { loneSurrogates: 'reject', nesting: 'reject', duplicateMembers: 'reject' });
 ```
 
 ## 文档

@@ -74,6 +74,7 @@ import {
   fromStatus,
   readEnvelopeTime,
   toProtoEnvelope,
+  toProtoError,
 } from '../src/plugin/conversion.ts';
 import { effectiveDeadline, formatDeadline, parseDeadline } from '../src/plugin/deadline.ts';
 import {
@@ -1489,6 +1490,66 @@ test('写出 Error：带消息键的 text 留空，只有自由文本写 text，
   } finally {
     await plugin.close();
   }
+});
+
+test('写出 Error：细节写不出（孤立的代理项、超过 64 层）时这个错误不带细节，其余字段照写，内部错误的细节各自核对（invocation.md §3，ADR-0320）', () => {
+  const nested = (depth: number): JsonValue => {
+    let value: JsonValue = 0;
+    for (let level = 0; level < depth; level++) {
+      value = [value];
+    }
+    return value;
+  };
+  const inner = ErrorInfo.literal('KERNEL_UNEXPECTED_001', 'boom', { id: 'i1' });
+  const unwritable: Record<string, JsonObject> = {
+    'a lone high surrogate in a value': { id: 'o\uD800' },
+    'a lone low surrogate in an array': { ids: ['ok', '\uDC00x'] },
+    'a lone surrogate in a name': { 'i\uDBFFd': 1 },
+    'a lone surrogate in a nested name': { a: { '\uDFFF': 1 } },
+    '65 levels': { deep: nested(64) },
+  };
+  for (const [name, details] of Object.entries(unwritable)) {
+    assert.deepEqual(
+      toProtoError(ErrorInfo.unexpected('ORDERS_UNEXPECTED_001', 'orders.failed', details, inner)),
+      {
+        code: 'ORDERS_UNEXPECTED_001',
+        messageKey: 'orders.failed',
+        text: '',
+        details: '',
+        inner: {
+          code: 'KERNEL_UNEXPECTED_001',
+          messageKey: '',
+          text: 'boom',
+          details: '{"id":"i1"}',
+          inner: undefined,
+        },
+      },
+      name,
+    );
+    const literal = toProtoError(
+      ErrorInfo.literal(
+        'ORDERS_CONFLICT_001',
+        'stale',
+        undefined,
+        ErrorInfo.literal('KERNEL_UNEXPECTED_001', 'boom', details),
+      ),
+    );
+    assert.equal(literal.text, 'stale', name);
+    assert.equal(literal.inner?.text, 'boom', name);
+    assert.equal(literal.inner?.details, '', `${name}: only the inner error loses its details`);
+  }
+  // 成对的代理项、真正的 U+FFFD、正好 64 层照常写出；非有限的浮点仍按值模型写成字符串
+  assert.equal(
+    toProtoError(
+      ErrorInfo.literal('ORDERS_CONFLICT_001', 'stale', {
+        deep: nested(63),
+        nan: Number.NaN,
+        r: '\uFFFD',
+        t: '汉字\uD83D\uDE00',
+      }),
+    ).details,
+    `{"deep":${'['.repeat(63)}0${']'.repeat(63)},"nan":"NaN","r":"\uFFFD","t":"汉字\uD83D\uDE00"}`,
+  );
 });
 
 test('调用上下文：trace_parent 按文法取、trace_state 不进上下文、Baggage 只留已登记的键，截止时间严格读并取较早者（invocation.md §2）', async () => {

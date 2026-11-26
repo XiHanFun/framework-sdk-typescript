@@ -243,7 +243,9 @@ export class ErrorInfo {
    *
    * @remarks
    * 空的 `details` 不写（RFC-0001「Result」）。细节里可以有 `bigint`、{@link Float64} 与非有限的浮点，
-   * 写成文本用 {@link writeJson}：`JSON.stringify` 写不出 `bigint`，也分不出整数与整数值的浮点
+   * 写成文本用 {@link writeJson}：`JSON.stringify` 写不出 `bigint`，也分不出整数与整数值的浮点。交给对方读的线上编码写成
+   * `writeJson(error, { loneSurrogates: 'reject', nesting: 'reject', duplicateMembers: 'reject' })`：文案或细节有孤立的代理项、
+   * 嵌套超过 64 层时抛 `TypeError`、不交出文本（RFC-0001「写出与转交」，ADR-0320）
    */
   toJSON(): ErrorInfoJson {
     const json: {

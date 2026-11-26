@@ -12,7 +12,10 @@ import { Maybe } from './maybe.ts';
  * 判别字段是 `ok`：`if (result.ok) result.value` 即可收窄。成功值不能为 `null` 或 `undefined`；
  * 没有值的成功是 `Result<void>`，由 {@link Result.success} 创建。
  * 线上编码与 .NET 参考实现一致：`{"ok":true,"value":…}`、没有值时 `{"ok":true}`、失败 `{"ok":false,"error":{…}}`；
- * 写出用 {@link writeJson}（数字按值模型写，`JSON.stringify` 写不出 `bigint` 与整数值的浮点），从文本读取用 {@link Result.parse}
+ * 写出用 {@link writeJson}（数字按值模型写，`JSON.stringify` 写不出 `bigint` 与整数值的浮点），从文本读取用 {@link Result.parse}。
+ * 交给对方按 RFC-0001 读的线上编码写成 `writeJson(result, { loneSurrogates: 'reject', nesting: 'reject', duplicateMembers: 'reject' })`：
+ * 字符串（文案、细节与成功值里的成员名与值）有孤立的代理项、从结果的根算起嵌套超过 64 层或有重复的成员名时抛 `TypeError`、
+ * 不交出文本，不写成 `\ud800` 这样对方读不进的转义（RFC-0001「写出与转交」，ADR-0320）
  */
 export type Result<T> = Ok<T> | Fail<T>;
 
@@ -80,7 +83,7 @@ export abstract class ResultBase<T> {
    *
    * @remarks
    * 值原样交出，它自己的 `toJSON`（如 Maybe 的无值写成 `null`）由写出的一方调用。写成文本用 {@link writeJson}：
-   * `JSON.stringify` 写不出 `bigint`，也分不出整数与整数值的浮点
+   * `JSON.stringify` 写不出 `bigint`，也分不出整数与整数值的浮点。线上编码的写法与写不出时的结果见 {@link Result}
    */
   toJSON(): { readonly ok: true; readonly value?: T } | { readonly ok: false; readonly error: ErrorInfoJson } {
     if (!this.ok) {

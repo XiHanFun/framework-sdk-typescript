@@ -89,7 +89,8 @@ const context = InvocationContext.create({ timeout: 2000, baggage: { [BaggageKey
 const response = await invoker.invoke(context, { id: 'orders.create', payload: '{"quantity":2}' });
 // response.outcome.ok === true, response.payload === '{"id":"o-t1","quantity":2}'
 const typed = await invoker.invokeTyped(context, createOrder, { quantity: 3 }); // Result<OrderCreated>
-const wire = writeJson(typed); // Wire encoding: numbers are written by the value model, not with JSON.stringify
+// Wire encoding: numbers follow the value model (not JSON.stringify); text the host cannot read throws a TypeError
+const wire = writeJson(typed, { loneSurrogates: 'reject', nesting: 'reject', duplicateMembers: 'reject' });
 ```
 
 ## Documentation
