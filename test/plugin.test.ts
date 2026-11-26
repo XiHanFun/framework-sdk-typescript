@@ -2954,6 +2954,72 @@ test('Host.publish 的字符串 data 严格编码成 UTF-8：编不成的那一�
   }
 });
 
+test('回调客户端关闭之后不发请求、不重新连接，排在载荷与 data 的编码之后：编不成的照旧是编码的错误，其余是 plugins.host.unavailable（invocation.md §5，ADR-0328）', async () => {
+  const host = await fakeHost({});
+  const high = String.fromCharCode(0xd83d);
+  const loneHigh = `{"x":"${high}"}`;
+  const base = { topic: 'probe.events', source: 'urn:test', type: 'probe.happened' };
+  const invalidPayload = {
+    code: 'KERNEL_VALIDATION_001',
+    key: 'kernel.operation.invalid_payload',
+    details: { id: 'orders.get', reason: '$' },
+  };
+  const notEncoded = {
+    code: 'MESSAGING_VALIDATION_002',
+    key: 'messaging.envelope.invalid',
+    details: { reason: 'the data has a lone surrogate and cannot be encoded as UTF-8' },
+  };
+  const outcomes = (results: readonly Result<void>[]) =>
+    results.map((result) => (result.ok ? 'ok' : describeError(result.error)));
+  // 扮演宿主的服务在任何断言失败时也要关掉，否则它让测试进程一直不退出
+  try {
+    const plugin = await launch({}, { XIHAN_PLUGIN_HOST_ADDRESS: host.address });
+    try {
+      await startPlugin(plugin.client);
+      await invoke(plugin.client, 'probes.context');
+      const callback = findHost(plugin.probe.lastContext as InvocationContext);
+      assert.ok(callback !== undefined);
+      const context = InvocationContext.create({});
+      // 关闭之前连上一次，关闭之后的回调不能借它或另建的连接发出去
+      assert.equal((await callback.invoke(context, 'orders.get', '{}')).outcome.ok, true);
+      const before = host.received.length;
+      callback.close();
+
+      const unencodable = await callback.invoke(context, 'orders.get', loneHigh);
+      assert.deepEqual(!unencodable.outcome.ok && describeError(unencodable.outcome.error), invalidPayload);
+      const closed = await callback.invoke(context, 'orders.get', '{}');
+      assert.ok(!closed.outcome.ok);
+      assert.equal(closed.outcome.error.code, PluginErrorCode.Unavailable);
+      assert.equal(closed.outcome.error.messageKey, PluginMessageKey.HostUnavailable);
+      assert.match(String(closed.outcome.error.details?.reason), /^Unavailable: /);
+
+      const mixed = outcomes(
+        await callback.publish(context, [
+          { ...base, id: 'a', data: '{}' },
+          { ...base, id: 'b', data: loneHigh },
+        ]),
+      );
+      assert.deepEqual(mixed[1], notEncoded);
+      assert.equal((mixed[0] as { key: string }).key, PluginMessageKey.HostUnavailable);
+      // 每一项都编不成时每一项都是编码的错误
+      assert.deepEqual(
+        outcomes(
+          await callback.publish(context, [
+            { ...base, id: 'c', data: loneHigh },
+            { ...base, id: 'd', data: loneHigh },
+          ]),
+        ),
+        [notEncoded, notEncoded],
+      );
+      assert.equal(host.received.length, before, 'nothing is sent once the callback client is closed');
+    } finally {
+      await plugin.close();
+    }
+  } finally {
+    host.close();
+  }
+});
+
 test('Invoke 的应答载荷严格编码成 UTF-8：孤立的代理项即 KERNEL_UNEXPECTED_001 + unhandled_exception、载荷为空，成对的照常写出（invocation.md §1，ADR-0315）', async () => {
   const high = String.fromCharCode(0xd83d);
   const low = String.fromCharCode(0xde00);
