@@ -38,7 +38,7 @@ CI 矩阵：`ubuntu-latest` 与 `windows-latest`，Node 24，外加 `ubuntu-late
 ```bash
 cd spec/conformance
 go run ./cmd/xihan-conformance plugin --dir <插件目录> --config '{"greeting":"hello"}' \
-  --sample 'echoes.create={"text":"hi"}' --exclude echoes.crash
+  --sample 'echoes.create={"text":"hi"}' --exclude echoes.crash --envelopes events.list
 ```
 
-`--json` 输出 JSON、`--quiet` 不转发插件的 stderr、`--case <名>` 只跑指定用例、`--timeout` 改每一步的截止时间。退出码 `0` 全部通过（含跳过）、`1` 有用例失败、`2` 参数或目录错误。运行器的 Go 依赖经 `GOPROXY` 下载。
+`--json` 输出 JSON、`--quiet` 不转发插件的 stderr、`--envelopes <操作>` 指明回显处理器拿到的信封的操作（用例 `event-envelope`，没给即跳过）、`--case <名>` 只跑指定用例、`--timeout` 改每一步的截止时间。退出码 `0` 全部通过（含跳过）、`1` 有用例失败、`2` 参数或目录错误。运行器的 Go 依赖经 `GOPROXY` 下载。

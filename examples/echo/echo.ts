@@ -46,8 +46,14 @@ export const EchoMessageKey = Object.freeze({
   HostUnavailable: 'echots.host.unavailable',
 } as const);
 
-/** 记住的事件 ID 至多这么多条：插件不让状态无界增长 */
+/** 记住的事件 ID 与信封各至多这么多条：插件不让状态无界增长 */
 const maxRememberedEvents = 100;
+
+/** 处理器在一次投递里拿到的信封：ID 与 `dataschema`（没有时为 `null`），黑盒运行器的用例 `event-envelope` 读它（invocation.md §7） */
+interface ReceivedEnvelope {
+  readonly id: string;
+  readonly dataSchema: string | null;
+}
 
 /** `echoes.create` 的请求：`text` 必填 */
 const CreateRequest = RequestShape.object({ text: RequestShape.required(RequestShape.string()) });
@@ -80,6 +86,7 @@ export function echoOptions(): PluginOptions {
 
   let greeting: string | undefined;
   const events: string[] = [];
+  const envelopes: ReceivedEnvelope[] = [];
   const registry = new OperationRegistry();
 
   registry.add({
@@ -141,13 +148,16 @@ export function echoOptions(): PluginOptions {
   });
 
   registry.add({
-    contract: defineContract<unknown, { readonly ids: readonly string[] }>({
+    contract: defineContract<
+      unknown,
+      { readonly ids: readonly string[]; readonly envelopes: readonly ReceivedEnvelope[] }
+    >({
       id: 'events.list',
       stability: Stability.Experimental,
       expose: [Expose.Http],
     }),
     request: EmptyRequest,
-    handler: async () => Result.ok({ ids: [...events] }),
+    handler: async () => Result.ok({ ids: [...events], envelopes: [...envelopes] }),
   });
 
   return {
@@ -162,6 +172,9 @@ export function echoOptions(): PluginOptions {
             events.push(envelope.id);
             events.splice(0, Math.max(0, events.length - maxRememberedEvents));
           }
+          // 每次投递都记，按收到的先后，只留最近的若干条
+          envelopes.push({ id: envelope.id, dataSchema: envelope.dataSchema === '' ? null : envelope.dataSchema });
+          envelopes.splice(0, Math.max(0, envelopes.length - maxRememberedEvents));
           return Result.success();
         },
       },

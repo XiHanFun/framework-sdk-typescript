@@ -29,7 +29,7 @@ description: 实现、修正或排查 TypeScript SDK 的进程外插件运行时
 
 ## 黑盒运行器
 
-- `pnpm test` 里的 `test/plugin-conformance.test.ts` 把 `examples/echo` 放进临时目录、按平台写清单的 `entry` 与启动脚本，在 `spec/conformance` 里 `go run ./cmd/xihan-conformance plugin --dir <目录> --json --quiet --config '{"greeting":"hello"}' --sample … --exclude echoes.crash`，核对用例全集并要求全部通过。
+- `pnpm test` 里的 `test/plugin-conformance.test.ts` 把 `examples/echo` 放进临时目录、按平台写清单的 `entry` 与启动脚本，在 `spec/conformance` 里 `go run ./cmd/xihan-conformance plugin --dir <目录> --json --quiet --config '{"greeting":"hello"}' --sample … --exclude echoes.crash --envelopes events.list`，核对用例全集并要求全部通过。
 - 需要 Go（版本取 `spec/conformance/go.mod`）；缺 Go 默认失败，只有 `XIHAN_CONFORMANCE_REQUIRED=0` 才跳过。运行器的 Go 依赖经 `GOPROXY` 下载，国内网络可设 `GOPROXY=https://goproxy.cn,direct` 与 `GOSUMDB=sum.golang.google.cn`。
 - 只跑某个用例：手动运行时加 `--case <名>`（可重复）；用例名与含义见运行器 README。
 - Windows 与 Linux 都要通过：本机跑当前平台，另一平台看 CI 矩阵。
