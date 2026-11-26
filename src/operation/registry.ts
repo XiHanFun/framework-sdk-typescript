@@ -294,13 +294,24 @@ function invalidPayload(id: string, reason: string): Result<never> {
  *
  * @remarks
  * 写不出：非有限的浮点、循环引用、没有 JSON 表示的值，以及写不成合法 JSON 文本的字符串——成员名与值里孤立的代理项不写成
- * `\ud800` 这样的转义交给宿主（ADR-0318）。`toJSON` 抛出的 {@link FrameworkError} 放进 `inner`，`writeJson` 的 `TypeError` 不带
+ * `\ud800` 这样的转义交给宿主（ADR-0318）。写出的整段文本还要过 RFC-0001「JSON 文本」的共同检查（ADR-0319）：嵌套超过 64 层
+ * （从响应的根算起，`toJSON` 交出的与读进来的任意 JSON 也算）或同一个对象里有重复的成员名（`JsonMembers` 写得出）同样写不出。
+ * 这些都由 `writeJson` 边写边核对，不先写完再读一遍：语法、数字与 Unicode 本来就由它保证，深度与成员名靠计数与每个
+ * `JsonMembers` 一个名字集合，开销与写出本身同阶。`toJSON` 抛出的 {@link FrameworkError} 放进 `inner`，`writeJson` 的
+ * `TypeError` 不带
  *
  * @internal
  */
 export function encodeResponse(value: unknown): Result<string> {
   try {
-    return Result.ok(writeJson(value, { nonFinite: 'reject', loneSurrogates: 'reject' }));
+    return Result.ok(
+      writeJson(value, {
+        nonFinite: 'reject',
+        loneSurrogates: 'reject',
+        nesting: 'reject',
+        duplicateMembers: 'reject',
+      }),
+    );
   } catch (error) {
     return Result.fail(
       ErrorInfo.unexpected(

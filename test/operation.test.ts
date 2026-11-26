@@ -361,6 +361,68 @@ test('响应里的字符串有孤立的代理项时写不出：KERNEL_UNEXPECTED
   assert.equal(paired.payload, `{"text":"汉字😀${replacement}"}`);
 });
 
+test('写出的文本嵌套超过 64 层或有重复的成员名时写不出：KERNEL_UNEXPECTED_001 + unhandled_exception、不带 inner、没有载荷，恰好 64 层照常写出（RFC-0011 规则 10，ADR-0319）', async () => {
+  const arrays = (depth: number, inner: unknown = 0): unknown => {
+    let value = inner;
+    for (let layer = 0; layer < depth; layer += 1) {
+      value = [value];
+    }
+    return value;
+  };
+  const twice = new JsonMembers([
+    ['a', 1],
+    ['a', 2],
+  ]);
+  const responses: Readonly<Record<string, unknown>> = {
+    deep: arrays(65),
+    'deep-objects': { a: arrays(64, {}) },
+    'to-json': { toJSON: () => twice },
+    member: { inner: twice },
+    members: twice,
+    'deep-enough': arrays(64),
+  };
+  const registry = new OperationRegistry();
+  registry.add({
+    contract: defineContract<unknown, unknown>({ id: 'texts.get', expose: [] }),
+    request: RequestShape.object({ mode: RequestShape.string(), meta: RequestShape.json() }),
+    handler: async (_context, request) => {
+      const { mode, meta } = request as { readonly mode?: string; readonly meta?: unknown };
+      // 读进来的任意 JSON 再套 10 层写出：层数从响应的根算起
+      return Result.ok(mode === 'wrapped' ? arrays(10, meta) : responses[mode ?? '']);
+    },
+  });
+  const invoker = new OperationInvoker(registry);
+  const descriptor = registry.find('texts.get');
+  assert.ok(descriptor);
+  const wrapped = (depth: number): string => `{"mode":"wrapped","meta":${'['.repeat(depth)}0${']'.repeat(depth)}}`;
+  const unwritable: [string, string][] = [
+    ...['deep', 'deep-objects', 'to-json', 'member', 'members'].map((mode): [string, string] => [
+      mode,
+      JSON.stringify({ mode }),
+    ]),
+    ['wrapped 60 layers', wrapped(60)],
+  ];
+  for (const [what, payload] of unwritable) {
+    for (const response of [
+      await invoker.invoke(InvocationContext.create(), { id: 'texts.get', payload }),
+      await descriptor.execute(InvocationContext.create(), payload),
+    ]) {
+      assert.ok(!response.outcome.ok, what);
+      assert.equal(response.outcome.error.code, OperationErrorCode.Unexpected, what);
+      assert.equal(response.outcome.error.messageKey, InvocationMessageKey.UnhandledException, what);
+      assert.equal(response.outcome.error.details, undefined, what);
+      assert.equal(response.outcome.error.inner, undefined, what);
+      assert.equal(response.payload, undefined, what);
+    }
+  }
+  const deepest = `${'['.repeat(64)}0${']'.repeat(64)}`;
+  for (const payload of [JSON.stringify({ mode: 'deep-enough' }), wrapped(54)]) {
+    const response = await invoker.invoke(InvocationContext.create(), { id: 'texts.get', payload });
+    assert.ok(response.outcome.ok, payload);
+    assert.equal(response.payload, deepest, payload);
+  }
+});
+
 test('任意 JSON 的成员原样保留读到的值，写回时 JSON 值相等', async () => {
   const registry = new OperationRegistry();
   const contract = defineContract<unknown, unknown>({ id: 'echoes.create', expose: [] });

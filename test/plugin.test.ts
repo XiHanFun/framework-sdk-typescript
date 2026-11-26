@@ -54,6 +54,7 @@ import {
   Float64,
   FrameworkError,
   formatMessage,
+  JsonMembers,
   JsonNumber,
   type JsonObject,
   type JsonValue,
@@ -2954,6 +2955,48 @@ test('Invoke 的类型化应答里有孤立的代理项即 KERNEL_UNEXPECTED_001
     const paired = await invoke(plugin.client, 'probes.context', '{"text":"paired"}');
     assert.equal(paired.status?.ok, true);
     assert.deepEqual(Buffer.from(paired.payload), Buffer.from(`{"text":"汉字😀${replacement}"}`, 'utf8'));
+  } finally {
+    await plugin.close();
+  }
+});
+
+test('Invoke 的类型化应答嵌套超过 64 层或有重复的成员名即 KERNEL_UNEXPECTED_001 + unhandled_exception、不带 inner、载荷为空，恰好 64 层照常写出（invocation.md §1，ADR-0319）', async () => {
+  const arrays = (depth: number): unknown => {
+    let value: unknown = 0;
+    for (let layer = 0; layer < depth; layer += 1) {
+      value = [value];
+    }
+    return value;
+  };
+  const responses: Readonly<Record<string, unknown>> = {
+    deep: arrays(65),
+    duplicate: {
+      toJSON: () =>
+        new JsonMembers([
+          ['a', 1],
+          ['a', 2],
+        ]),
+    },
+    'deep-enough': arrays(64),
+  };
+  const registry = new OperationRegistry();
+  registry.add({
+    contract: defineContract<{ text?: string | null }, unknown>({ id: 'probes.context', expose: [Expose.Http] }),
+    request: RequestShape.object({ text: RequestShape.string() }),
+    handler: async (_context, request) => Result.ok(responses[request?.text ?? ''] ?? null),
+  });
+  const plugin = await launch({ registry });
+  try {
+    await startPlugin(plugin.client);
+    for (const text of ['deep', 'duplicate']) {
+      const response = await invoke(plugin.client, 'probes.context', JSON.stringify({ text }));
+      assertFailure(response.status, 'KERNEL_UNEXPECTED_001', 'kernel.invocation.unhandled_exception', undefined, text);
+      assert.equal(response.status?.error?.inner, undefined, text);
+      assert.equal(response.payload.length, 0, text);
+    }
+    const deepest = await invoke(plugin.client, 'probes.context', '{"text":"deep-enough"}');
+    assert.equal(deepest.status?.ok, true);
+    assert.deepEqual(Buffer.from(deepest.payload), Buffer.from(`${'['.repeat(64)}0${']'.repeat(64)}`, 'utf8'));
   } finally {
     await plugin.close();
   }
