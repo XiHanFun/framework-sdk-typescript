@@ -1,4 +1,13 @@
-import { Float64, hasToJSON, isIntegerNumber, JsonMembers, JsonNumber, maxInt64, minInt64 } from './json.ts';
+import {
+  Float64,
+  hasToJSON,
+  isIntegerNumber,
+  JsonMembers,
+  JsonNumber,
+  maxInt64,
+  maxJsonDepth,
+  minInt64,
+} from './json.ts';
 
 /** 控制字符的短写 */
 const shortEscapes: Readonly<Record<number, string>> = Object.freeze({
@@ -102,16 +111,21 @@ export function floatText(value: number): string {
  * - {@link JsonNumber} 照原文写；只有上溢的（`1e400`）在缺省模式下按值模型写成字符串 `"Infinity"`。
  * - {@link JsonMembers} 按文档顺序写成员。字符串按 {@link quoteJsonString} 转义；孤立的代理项按 `options.loneSurrogates`：
  *   缺省写成 `\ud800` 这样的转义，`reject` 时写不出（操作的类型化响应，RFC-0011 规则 10 的「编码」，ADR-0318）。
+ * - 嵌套层数与重复的成员名缺省不核对；`options.nesting`、`options.duplicateMembers` 为 `reject` 时，写出的文本超过
+ *   {@link maxJsonDepth} 层或同一个对象里有重复的成员名即写不出（操作的类型化响应，ADR-0319）。
  *
  * @throws TypeError 与 `JSON.stringify` 一样，值没有 JSON 表示（顶层是 `undefined`、函数或 symbol）、有循环引用；
- * 或 `nonFinite` 为 `reject` 时遇到非有限的浮点，`loneSurrogates` 为 `reject` 时写出的字符串（成员名与值）有孤立的代理项
+ * 或 `nonFinite` 为 `reject` 时遇到非有限的浮点，`loneSurrogates` 为 `reject` 时写出的字符串（成员名与值）有孤立的代理项，
+ * `nesting` 为 `reject` 时嵌套超过 64 层，`duplicateMembers` 为 `reject` 时同一个对象里有重复的成员名
  */
 export function writeJson(value: unknown, options?: JsonWriteOptions): string {
   const mode: WriteMode = {
     rejectNonFinite: options?.nonFinite === 'reject',
     rejectLoneSurrogates: options?.loneSurrogates === 'reject',
+    maxDepth: options?.nesting === 'reject' ? maxJsonDepth : Number.POSITIVE_INFINITY,
+    rejectDuplicateMembers: options?.duplicateMembers === 'reject',
   };
-  const text = writeValue(value, new Set(), mode);
+  const text = writeValue(value, new Set(), mode, 0);
   if (text === undefined) {
     throw new TypeError('The value has no JSON representation.');
   }
@@ -133,6 +147,22 @@ export interface JsonWriteOptions {
    * `reject`（RFC-0011 规则 10 的「编码」，ADR-0318）；RFC-0010 的模板与错误细节这类无类型的值照旧写成转义
    */
   readonly loneSurrogates?: 'escape' | 'reject';
+  /**
+   * 嵌套层数：`unbounded` 不核对（缺省），`reject` 时写出的文本超过 {@link maxJsonDepth} 层（最外层的对象或数组是第 1 层）写不出
+   *
+   * @remarks
+   * 共同读取检查（RFC-0001「JSON 文本」）拒收超过 64 层的文本。层数从写出的根算起，`toJSON` 交出的值与读进来的任意 JSON
+   * 也算在内；边写边数，超过即停，不先写完整段文本再读一遍。操作的类型化响应用 `reject`（RFC-0011 规则 10 的「编码」，ADR-0319）
+   */
+  readonly nesting?: 'unbounded' | 'reject';
+  /**
+   * 同一个对象里重复的成员名：`write` 照写（缺省），`reject` 写不出
+   *
+   * @remarks
+   * 普通对象的自有键不会重复，只有 {@link JsonMembers}（直接作值、作成员或由 `toJSON` 交出）写得出重复的名字；只看写出的成员，
+   * 值写不出而省略的不算，名字按 UTF-16 码元比较，与共同读取检查相同。操作的类型化响应用 `reject`（RFC-0011 规则 10 的「编码」，ADR-0319）
+   */
+  readonly duplicateMembers?: 'write' | 'reject';
 }
 
 /** {@link writeJson} 这一次写出的严格程度 */
@@ -141,9 +171,16 @@ interface WriteMode {
   readonly rejectNonFinite: boolean;
   /** 字符串里孤立的代理项写不出 */
   readonly rejectLoneSurrogates: boolean;
+  /** 写得出的最深层数；不核对时是无穷 */
+  readonly maxDepth: number;
+  /** 同一个对象里重复的成员名写不出 */
+  readonly rejectDuplicateMembers: boolean;
 }
 
-function writeValue(input: unknown, ancestors: Set<object>, mode: WriteMode): string | undefined {
+/**
+ * 写出一个值；`depth` 是包着它的对象与数组的层数，根是 0
+ */
+function writeValue(input: unknown, ancestors: Set<object>, mode: WriteMode, depth: number): string | undefined {
   let value = input;
   // 与 JSON.stringify 一样先调用 toJSON；Maybe 这类包装的 toJSON 返回的值可能还有 toJSON，接着调用，直到得到普通值
   for (let rounds = 0; rounds < 8 && hasToJSON(value); rounds += 1) {
@@ -180,17 +217,32 @@ function writeValue(input: unknown, ancestors: Set<object>, mode: WriteMode): st
   if (ancestors.has(value)) {
     throw new TypeError('The value contains a circular reference.');
   }
+  // 这个对象或数组是第 layer 层：进入之前就核对，超过即停，递归深度因此有界
+  const layer = depth + 1;
+  if (layer > mode.maxDepth) {
+    throw new TypeError(
+      `The value is nested deeper than ${maxJsonDepth} levels, which cannot be written as JSON text.`,
+    );
+  }
   ancestors.add(value);
   try {
     if (Array.isArray(value)) {
-      return `[${value.map((item: unknown) => writeValue(item, ancestors, mode) ?? 'null').join(',')}]`;
+      return `[${value.map((item: unknown) => writeValue(item, ancestors, mode, layer) ?? 'null').join(',')}]`;
     }
     const entries = value instanceof JsonMembers ? value.entries : Object.entries(value);
+    // Object.entries 交出的自有键不会重复（代理的 ownKeys 交出重复的键时引擎抛出），只有 JsonMembers 要记下写过的名字
+    const written = mode.rejectDuplicateMembers && value instanceof JsonMembers ? new Set<string>() : undefined;
     const members: string[] = [];
     for (const [name, member] of entries) {
-      const text = writeValue(member, ancestors, mode);
+      const text = writeValue(member, ancestors, mode, layer);
       if (text !== undefined) {
         // 只核对写出的成员名：值写不出（undefined、函数）的成员整个省略，与 JSON.stringify 相同
+        if (written !== undefined) {
+          if (written.has(name)) {
+            throw new TypeError('The object has a duplicate member name, which cannot be written as JSON text.');
+          }
+          written.add(name);
+        }
         members.push(`${quote(name, mode.rejectLoneSurrogates)}:${text}`);
       }
     }

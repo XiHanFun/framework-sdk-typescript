@@ -40,13 +40,13 @@ export {
   type JsonPrimitive,
   type JsonValue,
   maxInt64,
+  maxJsonDepth,
   minInt64,
 } from './json.ts';
 export { JsonPath } from './json-path.ts';
 export {
   type JsonTextProblem,
   type JsonTextRead,
-  maxJsonDepth,
   parseJson,
   readJsonText,
   toJsonValue,

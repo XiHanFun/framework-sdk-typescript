@@ -192,6 +192,14 @@ export const minInt64 = -(2n ** 63n);
 export const maxInt64 = 2n ** 63n - 1n;
 
 /**
+ * JSON 文本的嵌套上限：最外层的对象或数组是第 1 层（RFC-0001「JSON 文本」）
+ *
+ * @remarks
+ * 读取的共同检查（{@link readJsonText}）与类型化响应的写出（{@link writeJson} 的 `nesting: 'reject'`）共用这一个上限
+ */
+export const maxJsonDepth = 64;
+
+/**
  * 判断一个 `number` 按值模型是不是整数：安全整数且不是负零
  *
  * @remarks

@@ -9,16 +9,12 @@ import {
   JsonNumber,
   type JsonValue,
   maxInt64,
+  maxJsonDepth,
   minInt64,
 } from './json.ts';
 import { JsonPath } from './json-path.ts';
 import { floatText } from './json-writer.ts';
 import { jsonNumberGrammar } from './number-grammar.ts';
-
-/**
- * JSON 文本的嵌套上限：最外层的对象或数组是第 1 层（RFC-0001「JSON 文本」）
- */
-export const maxJsonDepth = 64;
 
 /**
  * JSON 文本没有通过共同读取检查的原因

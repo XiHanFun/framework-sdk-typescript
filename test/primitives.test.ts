@@ -900,6 +900,89 @@ test('writeJson 的 loneSurrogates 为 reject 时字符串里孤立的代理项�
   assert.equal(quoteJsonString(`a${high}`), '"a\\ud83d"', 'quoteJsonString keeps escaping');
 });
 
+test('writeJson 的 nesting 为 reject 时超过 64 层写不出，恰好 64 层照常写出；层数从根算起，含 toJSON 与 Maybe 交出的（RFC-0001「JSON 文本」，ADR-0319）', () => {
+  const strict = { nesting: 'reject' } as const;
+  const arrays = (depth: number, inner: unknown = 0): unknown => {
+    let value = inner;
+    for (let layer = 0; layer < depth; layer += 1) {
+      value = [value];
+    }
+    return value;
+  };
+  const objects = (depth: number): unknown => {
+    let value: unknown = 0;
+    for (let layer = 0; layer < depth; layer += 1) {
+      value = { a: value };
+    }
+    return value;
+  };
+  const unwritable: [string, unknown][] = [
+    ['65 arrays', arrays(65)],
+    ['65 objects', objects(65)],
+    ['65 empty layers', arrays(64, [])],
+    ['an empty object at layer 65', arrays(64, {})],
+    ['JsonMembers at layer 65', arrays(64, new JsonMembers([['a', 1]]))],
+    ['a toJSON result at layer 65', arrays(10, { toJSON: () => arrays(55) })],
+    ['a Maybe at layer 65', { items: arrays(63, Maybe.some([1])) }],
+  ];
+  for (const [what, value] of unwritable) {
+    assert.throws(() => writeJson(value, strict), TypeError, what);
+    // 缺省照旧写出：RFC-0010 模板与错误细节用的写法不变
+    assert.doesNotThrow(() => writeJson(value), what);
+  }
+  const deepest = `${'['.repeat(maxJsonDepth)}0${']'.repeat(maxJsonDepth)}`;
+  assert.equal(writeJson(arrays(64), strict), deepest);
+  assert.equal(writeJson(objects(64), strict), `${'{"a":'.repeat(64)}0${'}'.repeat(64)}`);
+  assert.equal(writeJson(arrays(63, []), strict), `${'['.repeat(64)}${']'.repeat(64)}`);
+  assert.equal(writeJson(arrays(10, { toJSON: () => arrays(54) }), strict), deepest);
+  // 写出的文本正好是共同读取检查认的最深一层
+  assert.ok(readJsonText(deepest).ok);
+  assert.ok(!readJsonText(`[${deepest}]`).ok);
+});
+
+test('writeJson 的 duplicateMembers 为 reject 时同一个对象里重复的成员名写不出：JsonMembers 直接作值、作成员与 toJSON 交出的（RFC-0001「JSON 文本」，ADR-0319）', () => {
+  const strict = { duplicateMembers: 'reject' } as const;
+  const twice = new JsonMembers([
+    ['a', 1],
+    ['a', 2],
+  ]);
+  const unwritable: [string, unknown][] = [
+    ['JsonMembers', twice],
+    ['JsonMembers as a member', { inner: twice }],
+    ['JsonMembers in an array', [1, [twice]]],
+    ['a toJSON result', { toJSON: () => twice }],
+    ['a Maybe', Maybe.some(twice)],
+  ];
+  for (const [what, value] of unwritable) {
+    assert.throws(() => writeJson(value, strict), TypeError, what);
+    // 缺省照旧写出
+    assert.match(writeJson(value), /"a":1,"a":2/, what);
+  }
+  // 只核对写出的成员：值写不出而省略的不算；同名的成员在不同的对象里不算重复
+  const omitted = new JsonMembers([
+    ['a', undefined as unknown as JsonNode],
+    ['a', 1],
+  ]);
+  assert.equal(writeJson(omitted, strict), '{"a":1}');
+  assert.equal(
+    writeJson({ a: new JsonMembers([['a', new JsonMembers([['a', 1]])]]), b: [new JsonMembers([['a', 2]])] }, strict),
+    '{"a":{"a":{"a":1}},"b":[{"a":2}]}',
+  );
+  // 名字按 UTF-16 码元比较：大小写与写法不同的名字不重复
+  assert.equal(
+    writeJson(
+      new JsonMembers([
+        ['a', 1],
+        ['A', 2],
+        ['é', 3],
+        ['é', 4],
+      ]),
+      strict,
+    ),
+    '{"a":1,"A":2,"é":3,"é":4}',
+  );
+});
+
 test('Maybe 里保留原文的数字照原文写出，往返不丢精度（Float64 与 JsonNumber 都不经 toJSON 换成 number）', () => {
   const text = '12345678901234567890';
   // 超出 64 位的整数读成保留原文的 JsonNumber；包进 Maybe 再写出仍是原文，不按浮点写成 1.2345678901234567E+19
