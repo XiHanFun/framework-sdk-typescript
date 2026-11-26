@@ -252,9 +252,9 @@ export class InvocationContext {
   withBaggage(key: string, value: string): InvocationContext {
     checkBaggageMember(key, value);
     if (isBaggageKeyRegistered(key) && key !== BaggageKey.IdempotencyKey && !isBaggageValueAcceptable(value)) {
-      // 值可能含控制字符，不写进消息
+      // 值可能含控制字符或孤立的代理项，不写进消息
       throw FrameworkError.invalidArgument(
-        `The baggage value of '${key}' must not be empty, longer than 256 UTF-16 code units or contain control characters.`,
+        `The baggage value of '${key}' must not be empty, longer than 256 UTF-16 code units or contain control characters or lone surrogates.`,
       );
     }
     const baggage = Object.freeze({ ...this.#state.baggage, [key]: value });
@@ -429,7 +429,7 @@ function resolveTrace(options: InvocationContextOptions): Pick<State, 'traceId' 
  * 把一组外部输入的 Baggage 复制并冻结
  *
  * @remarks
- * 键不合格式、值不是字符串是编程错误；已登记键的值不合约束（空、超过 256 个 UTF-16 码元、含控制字符）的成员丢弃，
+ * 键不合格式、值不是字符串是编程错误；已登记键的值不合约束（空、超过 256 个 UTF-16 码元、含控制字符或孤立的代理项）的成员丢弃，
  * 与 W3C Baggage 忽略不合法的成员一致（conventions/baggage-keys.md）。幂等键例外：丢了它重复的调用会执行两次，
  * 不合法的幂等键由幂等阶段以校验错误拒绝
  */

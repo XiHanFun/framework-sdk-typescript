@@ -208,16 +208,27 @@ test('traceparent 的解析与写出遵循向量：只认版本 00，标志只�
   assert.ok(root.sampled && root.traceParent.endsWith('-01'), 'the root writes 01');
 });
 
-test('外部输入的 Baggage 丢弃不合的成员，程序内逐项派生给出不合的值是编程错误，幂等键除外', () => {
+test('外部输入的 Baggage 丢弃不合的成员，程序内逐项派生给出不合的值是编程错误，幂等键除外；孤立的代理项同样不合（ADR-0321）', () => {
   const url = new URL('../spec/conformance/vectors/primitives/baggage-keys.json', import.meta.url);
   const { values } = JSON.parse(readFileSync(url, 'utf8')) as {
-    values: { acceptable: string[]; unacceptable: string[] };
+    values: {
+      acceptable: string[];
+      unacceptable: string[];
+      acceptableUtf16: { name: string; utf16: string[] }[];
+      unacceptableUtf16: { name: string; utf16: string[] }[];
+    };
   };
-  for (const value of values.acceptable) {
+  // 以码元列出的两组按码元组成字符串（RFC-0012「一致性」的写法）
+  assert.ok(values.acceptableUtf16.length > 0 && values.unacceptableUtf16.length > 0);
+  const fromUnits = (units: readonly string[]) =>
+    String.fromCharCode(...units.map((unit) => Number.parseInt(unit, 16)));
+  const acceptable = [...values.acceptable, ...values.acceptableUtf16.map((c) => fromUnits(c.utf16))];
+  const unacceptable = [...values.unacceptable, ...values.unacceptableUtf16.map((c) => fromUnits(c.utf16))];
+  for (const value of acceptable) {
     assert.equal(InvocationContext.create({ baggage: { [BaggageKey.Tenant]: value } }).tenant, value);
     assert.equal(InvocationContext.create().withBaggage(BaggageKey.Correlation, value).correlation, value);
   }
-  for (const value of values.unacceptable) {
+  for (const value of unacceptable) {
     const context = InvocationContext.create({
       baggage: {
         [BaggageKey.Tenant]: value,

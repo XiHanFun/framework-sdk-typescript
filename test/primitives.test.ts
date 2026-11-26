@@ -169,7 +169,12 @@ test('Baggage 键遵循向量', () => {
     wellFormed: string[];
     illFormed: string[];
     registered: string[];
-    values: { acceptable: string[]; unacceptable: string[] };
+    values: {
+      acceptable: string[];
+      unacceptable: string[];
+      acceptableUtf16: { name: string; utf16: string[] }[];
+      unacceptableUtf16: { name: string; utf16: string[] }[];
+    };
   }>('baggage-keys.json');
   for (const key of vectors.wellFormed) {
     assert.ok(isBaggageKeyWellFormed(key), `${key} must be well-formed`);
@@ -184,11 +189,19 @@ test('Baggage 键遵循向量', () => {
   assert.ok(!isBaggageKeyRegistered('xihan.feature-flag'));
   assert.equal(BaggageKey.IdempotencyKey, 'xihan.idempotency-key');
   assert.ok(Object.isFrozen(registeredBaggageKeys));
-  // 已登记键的值的约束（ADR-0204、ADR-0233）
-  for (const value of vectors.values.acceptable) {
+  // 已登记键的值的约束（ADR-0204、ADR-0233）；以码元列出的两组按码元组成字符串（孤立的代理项，ADR-0321）
+  assert.ok(vectors.values.acceptableUtf16.length > 0 && vectors.values.unacceptableUtf16.length > 0);
+  const fromUnits = (units: readonly string[]) =>
+    String.fromCharCode(...units.map((unit) => Number.parseInt(unit, 16)));
+  const acceptable = [...vectors.values.acceptable, ...vectors.values.acceptableUtf16.map((c) => fromUnits(c.utf16))];
+  const unacceptable = [
+    ...vectors.values.unacceptable,
+    ...vectors.values.unacceptableUtf16.map((c) => fromUnits(c.utf16)),
+  ];
+  for (const value of acceptable) {
     assert.ok(isBaggageValueAcceptable(value), `${JSON.stringify(value)} must be acceptable`);
   }
-  for (const value of vectors.values.unacceptable) {
+  for (const value of unacceptable) {
     assert.ok(!isBaggageValueAcceptable(value), `${JSON.stringify(value)} must be unacceptable`);
   }
   assert.equal(maxBaggageValueLength, 256);
