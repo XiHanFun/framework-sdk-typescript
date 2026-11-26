@@ -290,13 +290,17 @@ function invalidPayload(id: string, reason: string): Result<never> {
 }
 
 /**
- * 编码响应；值无法编码为 JSON（bigint、循环引用、函数）时是 `KERNEL_UNEXPECTED_001`
+ * 编码响应（RFC-0011 规则 10 的「编码」）；写不出时是 `KERNEL_UNEXPECTED_001` + `kernel.invocation.unhandled_exception`
+ *
+ * @remarks
+ * 写不出：非有限的浮点、循环引用、没有 JSON 表示的值，以及写不成合法 JSON 文本的字符串——成员名与值里孤立的代理项不写成
+ * `\ud800` 这样的转义交给宿主（ADR-0318）。`toJSON` 抛出的 {@link FrameworkError} 放进 `inner`，`writeJson` 的 `TypeError` 不带
  *
  * @internal
  */
 export function encodeResponse(value: unknown): Result<string> {
   try {
-    return Result.ok(writeJson(value, { nonFinite: 'reject' }));
+    return Result.ok(writeJson(value, { nonFinite: 'reject', loneSurrogates: 'reject' }));
   } catch (error) {
     return Result.fail(
       ErrorInfo.unexpected(

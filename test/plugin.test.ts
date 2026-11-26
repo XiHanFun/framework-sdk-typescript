@@ -2897,7 +2897,7 @@ test('Invoke 的应答载荷严格编码成 UTF-8：孤立的代理项即 KERNEL
   const low = String.fromCharCode(0xde00);
   let answer = '{}';
   const original = OperationInvoker.prototype.invoke;
-  // 调用器经 writeJson 写出的载荷把孤立的代理项写成转义，运行时收到的总是合法的字符串：换掉调用器，直接交出带孤立代理项的字符串
+  // 调用器写不出带孤立代理项的应答（ADR-0318），运行时从它收到的总是合法的字符串：换掉调用器，直接交出带孤立代理项的字符串
   OperationInvoker.prototype.invoke = async () => ({ outcome: Result.success(), payload: answer });
   const plugin = await launch();
   try {
@@ -2922,6 +2922,39 @@ test('Invoke 的应答载荷严格编码成 UTF-8：孤立的代理项即 KERNEL
     assert.deepEqual(Buffer.from(paired.payload), Buffer.from(answer, 'utf8'));
   } finally {
     OperationInvoker.prototype.invoke = original;
+    await plugin.close();
+  }
+});
+
+test('Invoke 的类型化应答里有孤立的代理项即 KERNEL_UNEXPECTED_001 + unhandled_exception、不带 inner、载荷为空，不写成转义交给宿主（invocation.md §1，ADR-0318）', async () => {
+  const high = String.fromCharCode(0xd83d);
+  const low = String.fromCharCode(0xde00);
+  const replacement = String.fromCharCode(0xfffd);
+  const responses: Readonly<Record<string, JsonValue>> = {
+    value: { text: `a${high}` },
+    name: { [`${low}`]: 'x' },
+    element: ['ok', `${low}${high}`],
+    paired: { text: `汉字${high}${low}${replacement}` },
+  };
+  const registry = new OperationRegistry();
+  registry.add({
+    contract: defineContract<{ text?: string | null }, JsonValue>({ id: 'probes.context', expose: [Expose.Http] }),
+    request: RequestShape.object({ text: RequestShape.string() }),
+    handler: async (_context, request) => Result.ok(responses[request?.text ?? ''] ?? null),
+  });
+  const plugin = await launch({ registry });
+  try {
+    await startPlugin(plugin.client);
+    for (const text of ['value', 'name', 'element']) {
+      const response = await invoke(plugin.client, 'probes.context', JSON.stringify({ text }));
+      assertFailure(response.status, 'KERNEL_UNEXPECTED_001', 'kernel.invocation.unhandled_exception', undefined, text);
+      assert.equal(response.status?.error?.inner, undefined, text);
+      assert.equal(response.payload.length, 0, text);
+    }
+    const paired = await invoke(plugin.client, 'probes.context', '{"text":"paired"}');
+    assert.equal(paired.status?.ok, true);
+    assert.deepEqual(Buffer.from(paired.payload), Buffer.from(`{"text":"汉字😀${replacement}"}`, 'utf8'));
+  } finally {
     await plugin.close();
   }
 });

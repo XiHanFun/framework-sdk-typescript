@@ -31,6 +31,7 @@ import {
   FrameworkError,
   formatMessage,
   isPlainObject,
+  JsonMembers,
   JsonNumber,
   JsonPath,
   PipelineStage,
@@ -318,6 +319,46 @@ test('管道结束之后才编码响应：数字按值模型写，写不出时�
   assert.ok(!direct.outcome.ok);
   assert.equal(direct.outcome.error.messageKey, InvocationMessageKey.UnhandledException);
   assert.equal(direct.payload, undefined);
+});
+
+test('响应里的字符串有孤立的代理项时写不出：KERNEL_UNEXPECTED_001 + unhandled_exception、不带 inner、没有载荷，不写成转义（RFC-0011 规则 10，ADR-0318）', async () => {
+  const high = String.fromCharCode(0xd83d);
+  const low = String.fromCharCode(0xde00);
+  const replacement = String.fromCharCode(0xfffd);
+  const responses: Readonly<Record<string, unknown>> = {
+    value: { text: `a${high}` },
+    name: { [`${low}`]: 1 },
+    element: { items: ['ok', `${low}${high}`] },
+    members: new JsonMembers([[`x${high}`, 1]]),
+    paired: { text: `汉字${high}${low}${replacement}` },
+  };
+  const registry = new OperationRegistry();
+  registry.add({
+    contract: defineContract<{ readonly mode?: string | null }, unknown>({ id: 'texts.get', expose: [] }),
+    request: RequestShape.object({ mode: RequestShape.string() }),
+    handler: async (_context, request) => Result.ok(responses[request.mode ?? '']),
+  });
+  const invoker = new OperationInvoker(registry);
+  const descriptor = registry.find('texts.get');
+  assert.ok(descriptor);
+  for (const mode of ['value', 'name', 'element', 'members']) {
+    const payload = JSON.stringify({ mode });
+    for (const response of [
+      await invoker.invoke(InvocationContext.create(), { id: 'texts.get', payload }),
+      await descriptor.execute(InvocationContext.create(), payload),
+    ]) {
+      assert.ok(!response.outcome.ok, mode);
+      assert.equal(response.outcome.error.code, OperationErrorCode.Unexpected, mode);
+      assert.equal(response.outcome.error.messageKey, InvocationMessageKey.UnhandledException, mode);
+      assert.equal(response.outcome.error.details, undefined, mode);
+      assert.equal(response.outcome.error.inner, undefined, mode);
+      assert.equal(response.payload, undefined, mode);
+    }
+  }
+  // 成对的代理项是一个字符，多字节文本与真正的 U+FFFD 照常写出
+  const paired = await invoker.invoke(InvocationContext.create(), { id: 'texts.get', payload: '{"mode":"paired"}' });
+  assert.ok(paired.outcome.ok);
+  assert.equal(paired.payload, `{"text":"汉字😀${replacement}"}`);
 });
 
 test('任意 JSON 的成员原样保留读到的值，写回时 JSON 值相等', async () => {
