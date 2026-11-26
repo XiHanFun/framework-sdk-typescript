@@ -17,6 +17,13 @@ const shortEscapes: Readonly<Record<number, string>> = Object.freeze({
  * 小写十六进制的 `\u001f`、`\ud800`；别的字符（含 `/`、U+007F–U+009F、U+2028 与非 ASCII）原样
  */
 export function quoteJsonString(text: string): string {
+  return quote(text, false);
+}
+
+/**
+ * 写成 JSON 字符串，写法同 {@link quoteJsonString}；`rejectLoneSurrogates` 为真时遇到孤立的代理项抛出 `TypeError`，不写成转义
+ */
+function quote(text: string, rejectLoneSurrogates: boolean): string {
   let out = '"';
   let start = 0;
   for (let index = 0; index < text.length; index += 1) {
@@ -34,6 +41,10 @@ export function quoteJsonString(text: string): string {
         // 成对的代理项是一个字符，原样写出
         index += 1;
         continue;
+      }
+      // 转义出的 \ud800 语法上合法，却不是 RFC-0001「JSON 文本」认的文本，读的一方都会拒绝：类型化的值在这里就写不出
+      if (rejectLoneSurrogates) {
+        throw new TypeError('The string has a lone surrogate, which cannot be written as JSON text.');
       }
       replacement = unicodeEscape(code);
     }
@@ -89,13 +100,18 @@ export function floatText(value: number): string {
  *   非有限的浮点按 `options.nonFinite`：缺省写成字符串 `"NaN"`、`"Infinity"`、`"-Infinity"`（无类型的值，如错误细节），
  *   `reject` 时写不出（类型化的值，如操作的响应：不写成 `null` 或字符串，RFC-0011 规则 2）。
  * - {@link JsonNumber} 照原文写；只有上溢的（`1e400`）在缺省模式下按值模型写成字符串 `"Infinity"`。
- * - {@link JsonMembers} 按文档顺序写成员。字符串按 {@link quoteJsonString} 转义。
+ * - {@link JsonMembers} 按文档顺序写成员。字符串按 {@link quoteJsonString} 转义；孤立的代理项按 `options.loneSurrogates`：
+ *   缺省写成 `\ud800` 这样的转义，`reject` 时写不出（操作的类型化响应，RFC-0011 规则 10 的「编码」，ADR-0318）。
  *
- * @throws TypeError 与 `JSON.stringify` 一样，值没有 JSON 表示（顶层是 `undefined`、函数或 symbol）、有循环引用，
- * 或 `nonFinite` 为 `reject` 时遇到非有限的浮点
+ * @throws TypeError 与 `JSON.stringify` 一样，值没有 JSON 表示（顶层是 `undefined`、函数或 symbol）、有循环引用；
+ * 或 `nonFinite` 为 `reject` 时遇到非有限的浮点，`loneSurrogates` 为 `reject` 时写出的字符串（成员名与值）有孤立的代理项
  */
 export function writeJson(value: unknown, options?: JsonWriteOptions): string {
-  const text = writeValue(value, new Set(), options?.nonFinite === 'reject');
+  const mode: WriteMode = {
+    rejectNonFinite: options?.nonFinite === 'reject',
+    rejectLoneSurrogates: options?.loneSurrogates === 'reject',
+  };
+  const text = writeValue(value, new Set(), mode);
   if (text === undefined) {
     throw new TypeError('The value has no JSON representation.');
   }
@@ -108,9 +124,26 @@ export function writeJson(value: unknown, options?: JsonWriteOptions): string {
 export interface JsonWriteOptions {
   /** 非有限的浮点：`string` 写成字符串（缺省），`reject` 写不出 */
   readonly nonFinite?: 'string' | 'reject';
+  /**
+   * 写出的字符串（成员名与值，含 {@link JsonMembers} 的成员名与 `toJSON` 交出的字符串）里孤立的代理项：`escape` 写成 `\ud800`
+   * 这样的转义（缺省），`reject` 写不出
+   *
+   * @remarks
+   * 转义出的孤立代理项语法上合法，却不是 RFC-0001「JSON 文本」认的文本，XiHan 读取 JSON 的一方都会拒绝。操作的类型化响应用
+   * `reject`（RFC-0011 规则 10 的「编码」，ADR-0318）；RFC-0010 的模板与错误细节这类无类型的值照旧写成转义
+   */
+  readonly loneSurrogates?: 'escape' | 'reject';
 }
 
-function writeValue(input: unknown, ancestors: Set<object>, reject: boolean): string | undefined {
+/** {@link writeJson} 这一次写出的严格程度 */
+interface WriteMode {
+  /** 非有限的浮点写不出；也表示类型化的值，{@link JsonNumber} 照原文写 */
+  readonly rejectNonFinite: boolean;
+  /** 字符串里孤立的代理项写不出 */
+  readonly rejectLoneSurrogates: boolean;
+}
+
+function writeValue(input: unknown, ancestors: Set<object>, mode: WriteMode): string | undefined {
   let value = input;
   // 与 JSON.stringify 一样先调用 toJSON；Maybe 这类包装的 toJSON 返回的值可能还有 toJSON，接着调用，直到得到普通值
   for (let rounds = 0; rounds < 8 && hasToJSON(value); rounds += 1) {
@@ -122,13 +155,13 @@ function writeValue(input: unknown, ancestors: Set<object>, reject: boolean): st
   }
   switch (typeof value) {
     case 'string':
-      return quoteJsonString(value);
+      return quote(value, mode.rejectLoneSurrogates);
     case 'boolean':
       return value ? 'true' : 'false';
     case 'number':
-      return isIntegerNumber(value) ? String(value) : floatWire(value, reject);
+      return isIntegerNumber(value) ? String(value) : floatWire(value, mode.rejectNonFinite);
     case 'bigint':
-      return value >= minInt64 && value <= maxInt64 ? value.toString() : floatWire(Number(value), reject);
+      return value >= minInt64 && value <= maxInt64 ? value.toString() : floatWire(Number(value), mode.rejectNonFinite);
     case 'object':
       break;
     default:
@@ -138,11 +171,11 @@ function writeValue(input: unknown, ancestors: Set<object>, reject: boolean): st
     return 'null';
   }
   if (value instanceof Float64) {
-    return floatWire(value.value, reject);
+    return floatWire(value.value, mode.rejectNonFinite);
   }
   if (value instanceof JsonNumber) {
     // 无类型的值按值模型：上溢的数字是无穷，写成字符串，与 .NET 读成 double 再写出相同；类型化的值（任意 JSON 的成员）照原文
-    return reject || Number.isFinite(value.value) ? value.text : floatWire(value.value, false);
+    return mode.rejectNonFinite || Number.isFinite(value.value) ? value.text : floatWire(value.value, false);
   }
   if (ancestors.has(value)) {
     throw new TypeError('The value contains a circular reference.');
@@ -150,14 +183,15 @@ function writeValue(input: unknown, ancestors: Set<object>, reject: boolean): st
   ancestors.add(value);
   try {
     if (Array.isArray(value)) {
-      return `[${value.map((item: unknown) => writeValue(item, ancestors, reject) ?? 'null').join(',')}]`;
+      return `[${value.map((item: unknown) => writeValue(item, ancestors, mode) ?? 'null').join(',')}]`;
     }
     const entries = value instanceof JsonMembers ? value.entries : Object.entries(value);
     const members: string[] = [];
     for (const [name, member] of entries) {
-      const text = writeValue(member, ancestors, reject);
+      const text = writeValue(member, ancestors, mode);
       if (text !== undefined) {
-        members.push(`${quoteJsonString(name)}:${text}`);
+        // 只核对写出的成员名：值写不出（undefined、函数）的成员整个省略，与 JSON.stringify 相同
+        members.push(`${quote(name, mode.rejectLoneSurrogates)}:${text}`);
       }
     }
     return `{${members.join(',')}}`;

@@ -872,6 +872,34 @@ test('数字按值模型读写', () => {
   assert.equal(writeJson({ s: '😀' }), '{"s":"😀"}', 'paired surrogates stay as they are');
 });
 
+test('writeJson 的 loneSurrogates 为 reject 时字符串里孤立的代理项写不出：值、成员名、JsonMembers 的名字、数组的项与 toJSON 的结果（RFC-0011 规则 10，ADR-0318）', () => {
+  const high = String.fromCharCode(0xd83d);
+  const low = String.fromCharCode(0xde00);
+  const strict = { loneSurrogates: 'reject' } as const;
+  const unwritable: [string, unknown][] = [
+    ['a value', `a${high}`],
+    ['a member value', { text: `${low}b` }],
+    ['a member name', { [`k${high}`]: 1 }],
+    ['an array item', [1, 'ok', `${low}${high}`]],
+    ['a JsonMembers name', new JsonMembers([[`${high}${high}${low}`, 1]])],
+    ['a nested value', { nested: { items: [{ name: `x${high}` }] } }],
+    ['a toJSON result', { toJSON: () => `${high}` }],
+    ['a Maybe', Maybe.some(`${low}`)],
+  ];
+  for (const [what, value] of unwritable) {
+    assert.throws(() => writeJson(value, strict), TypeError, what);
+    // 缺省照旧写成转义：RFC-0010 模板与错误细节用的写法不变
+    assert.match(writeJson(value), /\\ud83d|\\ude00/, what);
+  }
+  // 成对的代理项、多字节文本与真正的 U+FFFD 照常写出
+  const replacement = String.fromCharCode(0xfffd);
+  assert.equal(
+    writeJson({ text: `汉字${high}${low}${replacement}`, [`${high}${low}`]: 1 }, strict),
+    `{"text":"汉字😀${replacement}","😀":1}`,
+  );
+  assert.equal(quoteJsonString(`a${high}`), '"a\\ud83d"', 'quoteJsonString keeps escaping');
+});
+
 test('Maybe 里保留原文的数字照原文写出，往返不丢精度（Float64 与 JsonNumber 都不经 toJSON 换成 number）', () => {
   const text = '12345678901234567890';
   // 超出 64 位的整数读成保留原文的 JsonNumber；包进 Maybe 再写出仍是原文，不按浮点写成 1.2345678901234567E+19
