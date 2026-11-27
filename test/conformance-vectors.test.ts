@@ -28,6 +28,7 @@ const replayed: readonly string[] = [
   'plugin/deadlines.json', // plugin.test.ts
   'plugin/envelope-times.json', // plugin.test.ts（valid 与 invalid 是 SDK 的读入，written 是宿主的写法，ADR-0310）
   'plugin/error-reading.json', // plugin.test.ts
+  'plugin/error-text-writing.json', // plugin.test.ts（utf16；codePoints 与 bytes 是别的存放方式）
   'plugin/handshake-lines.json', // plugin.test.ts
   'plugin/host-addresses.json', // plugin.test.ts
   'plugin/plugin-messages.json', // plugin.test.ts

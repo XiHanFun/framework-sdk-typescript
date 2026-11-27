@@ -40,7 +40,7 @@
 - **调整** 插件写给宿主的错误文案（含内部错误的）里每个孤立的代理项写成一个 U+FFFD，由 SDK 显式替换、不取决于 protobuf 库的缺省（ADR-0339）
 - **调整** 发布的包不再带 `.js.map` / `.d.ts.map`，`sideEffects` 改为列出 `plugin/messages`
 - **调整** `examples/echo` 的 `events.list` 回显处理器拿到的信封（`envelopes`），黑盒运行器的用例 `event-envelope` 通过（ADR-0327）
-- **调整** 规范指针升到规范 `73a82f1`
+- **调整** 规范指针升到规范 `2bf33b1`
 
 ## v0.2.0-rc.1（2026-11-21）
 

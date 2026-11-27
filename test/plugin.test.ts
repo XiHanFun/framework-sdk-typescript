@@ -1531,45 +1531,43 @@ test('写出 Error：细节写不出（孤立的代理项、超过 64 层）时�
   );
 });
 
-test('写出 Error 的文案：text（含内部错误的）里每个孤立的代理项换成一个 U+FFFD，成对的照抄，其余字段照写（invocation.md §3，ADR-0339）', () => {
-  const r = '\uFFFD';
-  const cases: ReadonlyArray<readonly [string, string, string]> = [
-    ['a lone high surrogate', 'a\uD800b', `a${r}b`],
-    ['a lone low surrogate', '\uDC00', r],
-    ['a high surrogate at the end', 'x\uDBFF', `x${r}`],
-    ['two high surrogates', '\uD800𐀀', `${r}𐀀`],
-    ['a low surrogate before a high one', '\uDC00\uD800', `${r}${r}`],
-    ['a surrogate pair', 'x😀y', 'x😀y'],
-    ['a real U+FFFD', '\uFFFD', r],
-    ['multibyte text', '汉字 é', '汉字 é'],
-  ];
-  for (const [name, text, want] of cases) {
-    const inner = ErrorInfo.literal('KERNEL_UNEXPECTED_001', `inner ${text}`, { n: 1 });
-    const encoded = toProtoError(ErrorInfo.literal('ORDERS_CONFLICT_001', text, { id: 'o1' }, inner));
-    assert.deepEqual(
-      encoded,
-      {
-        code: 'ORDERS_CONFLICT_001',
-        messageKey: '',
-        text: want,
-        details: '{"id":"o1"}',
-        inner: {
-          code: 'KERNEL_UNEXPECTED_001',
-          messageKey: '',
-          text: `inner ${want}`,
-          details: '{"n":1}',
-          inner: undefined,
-        },
-      },
-      name,
-    );
-    // 每一段换一个 U+FFFD：UTF-16 的长度不变
-    assert.equal(encoded.text.length, text.length, name);
-    // 整条错误照常写出，宿主读到的就是换过的文案；不依赖 protobuf 库经 TextEncoder 的缺省
-    const decoded = pb.Status.decode(pb.Status.encode({ ok: false, error: encoded }).finish());
-    assert.equal(decoded.error?.text, want, name);
-    assert.equal(decoded.error?.inner?.text, `inner ${want}`, name);
+test('写出 Error 的文案遵循 error-text-writing.json 的 utf16 一组：按码元组成的文案经 toProtoError 写出，text 与内部错误的 text 都等于期望值（invocation.md §3，ADR-0339、ADR-0346）', () => {
+  const vectors = vector<{ utf16: { name: string; utf16: string[]; expected: string }[] }>('error-text-writing.json');
+  assert.ok(vectors.utf16.length > 0);
+  // codePoints 是 Python 的 str 回放的，bytes 是以字节存放字符串的实现回放的
+  for (const c of vectors.utf16) {
+    // 按码元组成字符串（组法同 RFC-0012「一致性」）：JSON 字符串写不出孤立的代理项
+    const text = String.fromCharCode(...c.utf16.map((unit) => Number.parseInt(unit, 16)));
+    const inner = ErrorInfo.literal('KERNEL_UNEXPECTED_001', text);
+    const encoded = toProtoError(ErrorInfo.literal('ORDERS_CONFLICT_001', text, undefined, inner));
+    assert.equal(encoded.text, c.expected, c.name);
+    assert.equal(encoded.inner?.text, c.expected, c.name);
   }
+});
+
+test('写出 Error 的文案：只换 text（含内部错误的），其余字段照写，整条错误照常编码；带键的错误不写 text（invocation.md §3，ADR-0339）', () => {
+  // 替换本身由 error-text-writing.json 的回放核对（ADR-0346），这里看向量表达不了的：内部错误的文案前面另有文字、其余字段与编码
+  const text = 'a\uD800b';
+  const want = `a${String.fromCharCode(0xfffd)}b`;
+  const inner = ErrorInfo.literal('KERNEL_UNEXPECTED_001', `inner ${text}`, { n: 1 });
+  const encoded = toProtoError(ErrorInfo.literal('ORDERS_CONFLICT_001', text, { id: 'o1' }, inner));
+  assert.deepEqual(encoded, {
+    code: 'ORDERS_CONFLICT_001',
+    messageKey: '',
+    text: want,
+    details: '{"id":"o1"}',
+    inner: {
+      code: 'KERNEL_UNEXPECTED_001',
+      messageKey: '',
+      text: `inner ${want}`,
+      details: '{"n":1}',
+      inner: undefined,
+    },
+  });
+  // 整条错误照常写出，宿主读到的就是换过的文案；不依赖 protobuf 库经 TextEncoder 的缺省
+  const decoded = pb.Status.decode(pb.Status.encode({ ok: false, error: encoded }).finish());
+  assert.equal(decoded.error?.text, want);
+  assert.equal(decoded.error?.inner?.text, `inner ${want}`);
   // 带消息键的错误不写 text，withText 填进去的文案有孤立的代理项也不出现
   const keyed = toProtoError(ErrorInfo.unexpected('ORDERS_UNEXPECTED_001', 'orders.failed').withText('x\uD800'));
   assert.equal(keyed.text, '');
