@@ -99,7 +99,8 @@ export function messageOf(error: ErrorInfo, locale: string = defaultLocale()): s
  * @remarks
  * `code`、`message_key` 原样；带消息键的错误 `text` 留空，由宿主按目录翻译成调用方的语言（RFC-0010），
  * 不按任何区域在插件里渲染，作者用 `withText` 填进去的文案也不写；只有自由文本错误（{@link ErrorInfo.literal}）写 `text`。
- * `details` 是按值模型写出的 JSON 对象文本，没有或为空时为空串，写不出时也为空串（见 {@link writeDetails}）；`inner` 同样写出
+ * `details` 是按值模型写出的 JSON 对象文本，没有或为空时为空串，写不出时也为空串（见 {@link writeDetails}）；`inner` 同样写出。
+ * `text` 里孤立的代理项换成 U+FFFD（见 {@link scrubText}）
  *
  * @internal
  */
@@ -107,10 +108,25 @@ export function toProtoError(error: ErrorInfo): pb.Error {
   return {
     code: error.code,
     messageKey: error.messageKey ?? '',
-    text: error.messageKey === undefined ? error.message : '',
+    text: error.messageKey === undefined ? scrubText(error.message) : '',
     details: writeDetails(error.details),
     inner: error.inner === undefined ? undefined : toProtoError(error.inner),
   };
+}
+
+/** 孤立的代理项：带 `u` 标志时成对的代理项是一个码点、不属于 `Cs`，匹配到的只有孤立的 */
+const loneSurrogate = /\p{Cs}/gu;
+
+/**
+ * 把错误文案里孤立的代理项换成 U+FFFD（invocation.md §3「写出 `Error` 的文案」，ADR-0339）
+ *
+ * @remarks
+ * 文案是自由文本，不拒绝写出：每个孤立的代理项是 Unicode §3.9 的一个最大子部分，换一个 U+FFFD，成对的照抄，长度不变，
+ * 与 .NET 的 `Encoding.UTF8` 相同。二进制写出经 `TextEncoder` 本来也是这样换，这里显式换掉，不依赖 protobuf 库的缺省，
+ * 换一种写法（如 JSON 写成 `\ud800` 转义）也不变。不用 `String.prototype.toWellFormed`：构建的 `lib` 是 ES2023，类型里没有
+ */
+function scrubText(text: string): string {
+  return text.replace(loneSurrogate, '\uFFFD');
 }
 
 /** 写错误细节的选项：孤立的代理项、超过 64 层与重复的成员名写不出，非有限的浮点仍按值模型写成字符串 */

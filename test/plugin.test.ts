@@ -1552,6 +1552,51 @@ test('写出 Error：细节写不出（孤立的代理项、超过 64 层）时�
   );
 });
 
+test('写出 Error 的文案：text（含内部错误的）里每个孤立的代理项换成一个 U+FFFD，成对的照抄，其余字段照写（invocation.md §3，ADR-0339）', () => {
+  const r = '\uFFFD';
+  const cases: ReadonlyArray<readonly [string, string, string]> = [
+    ['a lone high surrogate', 'a\uD800b', `a${r}b`],
+    ['a lone low surrogate', '\uDC00', r],
+    ['a high surrogate at the end', 'x\uDBFF', `x${r}`],
+    ['two high surrogates', '\uD800𐀀', `${r}𐀀`],
+    ['a low surrogate before a high one', '\uDC00\uD800', `${r}${r}`],
+    ['a surrogate pair', 'x😀y', 'x😀y'],
+    ['a real U+FFFD', '\uFFFD', r],
+    ['multibyte text', '汉字 é', '汉字 é'],
+  ];
+  for (const [name, text, want] of cases) {
+    const inner = ErrorInfo.literal('KERNEL_UNEXPECTED_001', `inner ${text}`, { n: 1 });
+    const encoded = toProtoError(ErrorInfo.literal('ORDERS_CONFLICT_001', text, { id: 'o1' }, inner));
+    assert.deepEqual(
+      encoded,
+      {
+        code: 'ORDERS_CONFLICT_001',
+        messageKey: '',
+        text: want,
+        details: '{"id":"o1"}',
+        inner: {
+          code: 'KERNEL_UNEXPECTED_001',
+          messageKey: '',
+          text: `inner ${want}`,
+          details: '{"n":1}',
+          inner: undefined,
+        },
+      },
+      name,
+    );
+    // 每一段换一个 U+FFFD：UTF-16 的长度不变
+    assert.equal(encoded.text.length, text.length, name);
+    // 整条错误照常写出，宿主读到的就是换过的文案；不依赖 protobuf 库经 TextEncoder 的缺省
+    const decoded = pb.Status.decode(pb.Status.encode({ ok: false, error: encoded }).finish());
+    assert.equal(decoded.error?.text, want, name);
+    assert.equal(decoded.error?.inner?.text, `inner ${want}`, name);
+  }
+  // 带消息键的错误不写 text，withText 填进去的文案有孤立的代理项也不出现
+  const keyed = toProtoError(ErrorInfo.unexpected('ORDERS_UNEXPECTED_001', 'orders.failed').withText('x\uD800'));
+  assert.equal(keyed.text, '');
+  assert.equal(keyed.messageKey, 'orders.failed');
+});
+
 test('调用上下文：trace_parent 按文法取、trace_state 不进上下文、Baggage 只留已登记的键，截止时间严格读并取较早者（invocation.md §2）', async () => {
   const plugin = await launch();
   try {
