@@ -612,29 +612,8 @@ test('截止时间的读法、生效的截止时间与写法遵循 deadlines.jso
   assert.equal(formatDeadline(-Number.MAX_SAFE_INTEGER), '0001-01-01T00:00:00.0000000+00:00');
 });
 
-/**
- * 作者给的时刻与 SDK 写出的 `time`：换算成 UTC、以 `Z` 结尾，秒的小数部分去掉末尾的 0、全为 0 时不写小数点
- *
- * @remarks
- * 各语言的 SDK 对同一时刻写出同一份文本（精度以内）；`Date` 只到毫秒，更细的小数在构造 `Date` 时就截掉了
- */
-const writtenTimes: readonly (readonly [Date, string])[] = [
-  [new Date('2026-11-25T03:25:00Z'), '2026-11-25T03:25:00Z'],
-  [new Date('2026-11-25T03:25:00.5Z'), '2026-11-25T03:25:00.5Z'],
-  [new Date('2026-11-25T03:25:00.120Z'), '2026-11-25T03:25:00.12Z'],
-  [new Date('2026-11-25T03:25:00.001Z'), '2026-11-25T03:25:00.001Z'],
-  [new Date(Date.UTC(2026, 10, 25, 3, 25, 0, 123)), '2026-11-25T03:25:00.123Z'],
-  [new Date('2026-11-25T11:25:00.25+08:00'), '2026-11-25T03:25:00.25Z'],
-  [new Date('2026-11-24T22:25:00-05:00'), '2026-11-25T03:25:00Z'],
-  [new Date('2026-11-25T00:00:00+14:00'), '2026-11-24T10:00:00Z'],
-  [new Date('0001-01-01T00:00:00Z'), '0001-01-01T00:00:00Z'],
-  [new Date('9999-12-31T23:59:59.999Z'), '9999-12-31T23:59:59.999Z'],
-];
-
-test('信封的 time 写出：换算成 UTC、以 Z 结尾，小数去掉末尾的 0、整秒不写小数点；越界与 Invalid Date 照写（invocation.md §4）', () => {
-  for (const [time, text] of writtenTimes) {
-    assert.equal(formatEnvelopeTime(time), text, text);
-  }
+test('信封的 time 写出：本机时区的时刻换算成 UTC，越界与 Invalid Date 照写（invocation.md §4）', () => {
+  // 写出的各条用例由 sdk-envelope-times.json 的回放核对（ADR-0310、ADR-0340），这里只留向量表达不了的
   // 本机时区构造的时刻同样换算成 UTC
   const local = new Date(2026, 10, 25, 11, 25, 0, 250);
   assert.equal(formatEnvelopeTime(local), local.toISOString().replace('.250Z', '.25Z'));
@@ -669,9 +648,6 @@ test('信封的 time 读入与写出拿 envelope-times.json 自测：毫秒之�
   for (const written of vectors.written) {
     expectRead(written.text, written.instant === null ? undefined : Date.parse(written.instant));
   }
-  for (const [time, text] of writtenTimes) {
-    expectRead(text, time.getTime());
-  }
   // 九位小数截到毫秒、不进位：最晚的时刻不会进到 10000 年
   assert.equal(readEnvelopeTime('9999-12-31T23:59:59.999999999Z')?.toISOString(), '9999-12-31T23:59:59.999Z');
   assert.equal(readEnvelopeTime('2026-11-25T03:25:00.1234567+00:00')?.toISOString(), '2026-11-25T03:25:00.123Z');
@@ -690,7 +666,10 @@ test('信封的 time 按毫秒精度写出与读入遵循 sdk-envelope-times.jso
     // 作者给的时刻按 SDK 读宿主文本的读法构造：Date 没有偏移、只到毫秒，更细的小数截去；再经发布的写出路径写成文本
     const time = writing.instant === null ? undefined : readEnvelopeTime(writing.instant);
     assert.notEqual(time, null, `${writing.name}: the instant must be read`);
-    assert.equal(toProtoEnvelope({ ...base, time: time ?? undefined })?.time, writing.text.milliseconds, writing.name);
+    const written = toProtoEnvelope({ ...base, time: time ?? undefined })?.time;
+    assert.equal(written, writing.text.milliseconds, writing.name);
+    // 毫秒精度写出不再截断：写出的文本合文法、读回同一时刻
+    assert.equal(readEnvelopeTime(written ?? '')?.getTime(), time?.getTime(), `${writing.name}: read back`);
   }
   for (const reading of vectors.reading) {
     // 投递的读入路径：期望的时刻已截到毫秒，纪元之前的也不晚于原文
