@@ -1143,6 +1143,104 @@ test('Result 与 ErrorInfo 的线上编码以 reject 选项写出：孤立的代
   );
 });
 
+test('Result.write 与 ErrorInfo.write 严格写出线上编码：写得出的与 writeJson 同一份文本，写不出的抛 FrameworkError、不交出文本（RFC-0001「写出与转交」，ADR-0340）', () => {
+  const arrays = (depth: number): JsonValue => {
+    let value: JsonValue = 0;
+    for (let layer = 0; layer < depth; layer += 1) {
+      value = [value];
+    }
+    return value;
+  };
+  const writable: [string, Result<unknown>][] = [
+    [
+      'a value',
+      Result.ok({ id: 'o1', n: 2n, f: new Float64(2), nan: Number.NaN, big: new JsonNumber('9007199254740993') }),
+    ],
+    ['a unit success', Result.success()],
+    ['an absent maybe', Result.ok(Maybe.none<string>())],
+    ['a present maybe', Result.ok(Maybe.some('x'))],
+    ['a value 64 levels from the root', Result.ok(arrays(63))],
+    ['a surrogate pair', Result.ok({ t: '汉字😀' })],
+    [
+      'a failure',
+      Result.fail(
+        ErrorInfo.unexpected(
+          'ORDERS_UNEXPECTED_001',
+          'orders.failed',
+          { id: 'o1' },
+          ErrorInfo.literal('KERNEL_UNEXPECTED_001', 'boom'),
+        ),
+      ),
+    ],
+  ];
+  for (const [what, result] of writable) {
+    assert.equal(Result.write(result), writeJson(result), what);
+  }
+  assert.equal(Result.write(Result.ok(Maybe.none<string>())), '{"ok":true,"value":null}');
+  // 错误单独写是 64 层（根、细节、62 层数组），放进结果里多一层
+  const deepError = ErrorInfo.literal('ORDERS_CONFLICT_001', 'stale', { deep: arrays(62) });
+  assert.equal(ErrorInfo.write(deepError), writeJson(deepError));
+  const unwritable: [string, () => string][] = [
+    ['a lone surrogate in the value', () => Result.write(Result.ok({ text: 'a\uD800' }))],
+    ['a lone surrogate in a value name', () => Result.write(Result.ok({ '\uDC00': 1 }))],
+    ['a value 65 levels from the root', () => Result.write(Result.ok(arrays(64)))],
+    [
+      'duplicate members in the value',
+      () =>
+        Result.write(
+          Result.ok(
+            new JsonMembers([
+              ['a', 1],
+              ['a', 2],
+            ]),
+          ),
+        ),
+    ],
+    [
+      'a lone surrogate in the message',
+      () => Result.write(Result.fail(ErrorInfo.literal('ORDERS_CONFLICT_001', '\uDFFF'))),
+    ],
+    ['an error 65 levels from the root', () => Result.write(Result.fail(deepError))],
+    [
+      'a lone surrogate in a detail',
+      () => ErrorInfo.write(ErrorInfo.literal('ORDERS_CONFLICT_001', 'stale', { id: 'o\uD83D' })),
+    ],
+    [
+      'a lone surrogate in an inner error',
+      () =>
+        ErrorInfo.write(
+          ErrorInfo.literal(
+            'ORDERS_CONFLICT_001',
+            'stale',
+            undefined,
+            ErrorInfo.literal('KERNEL_UNEXPECTED_001', 'x\uDE00'),
+          ),
+        ),
+    ],
+  ];
+  for (const [what, write] of unwritable) {
+    const error = throwsCode(write, ErrorCode.InvalidArgument);
+    assert.ok(error.cause instanceof TypeError, `${what}: the TypeError of writeJson is the cause`);
+    assert.match(error.message, /^The (result|error) cannot be written as JSON text\.$/, what);
+  }
+  // 值写不出时整个 value 省略、写成 null 时读成无值：对方读到的是另一个结果，同样不交出
+  for (const [what, value] of [
+    ['a function', () => 1],
+    ['a symbol', Symbol('x')],
+    ['an invalid date', new Date(Number.NaN)],
+    ['a present maybe written as null', Maybe.some(new Date(Number.NaN))],
+  ] as const) {
+    const error = throwsCode(() => Result.write(Result.ok<unknown>(value)), ErrorCode.InvalidArgument);
+    assert.match(error.message, /^The result cannot be written as JSON text: /, what);
+  }
+  // 不是 Result 或 ErrorInfo 的值不按线上编码写
+  throwsCode(() => Result.write({ ok: true } as unknown as Result<void>), ErrorCode.InvalidArgument);
+  throwsCode(() => ErrorInfo.write({ code: 'ORDERS_CONFLICT_001' } as unknown as ErrorInfo), ErrorCode.InvalidArgument);
+  // JSON.stringify 与缺省的 writeJson 不变：孤立的代理项写成转义
+  assert.equal(JSON.stringify(Result.ok({ text: 'a\uD800' })), '{"ok":true,"value":{"text":"a\\ud800"}}');
+  assert.equal(writeJson(Result.ok({ text: 'a\uD800' })), '{"ok":true,"value":{"text":"a\\ud800"}}');
+});
+
 test('校验并原样返回：错误码、消息键与操作 ID', () => {
   assert.equal(validateErrorCode('ORDERS_NOTFOUND_001'), 'ORDERS_NOTFOUND_001');
   assert.equal(validateMessageKey('orders.quantity.invalid'), 'orders.quantity.invalid');

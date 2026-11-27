@@ -3,6 +3,7 @@ import { ErrorCode, ErrorKind, errorCodeDomain, errorCodeKind, invalidErrorCode,
 import { FrameworkError } from './framework.ts';
 import { freezeJsonObject, isPlainObject, type JsonObject } from './json.ts';
 import { parseJson } from './json-text.ts';
+import { type JsonWriteOptions, writeJson } from './json-writer.ts';
 import { describe, isMessageKey, resolveMessage, validateMessageKey } from './messages.ts';
 import { isBlank } from './whitespace.ts';
 
@@ -139,6 +140,25 @@ export class ErrorInfo {
   }
 
   /**
+   * 严格写出线上编码：交给对方按 RFC-0001 读的错误用它
+   *
+   * @remarks
+   * 写出的文本与 {@link writeJson}`(error)` 相同（成员顺序、数字按值模型、非有限的浮点写成字符串），不同的是对方读不进的不交出
+   * （RFC-0001「写出与转交」，ADR-0320、ADR-0340）：文案、消息键或细节（成员名与值，含内部错误的）有孤立的代理项，嵌套超过
+   * 64 层（错误是第 1 层），或细节里有重复的成员名（{@link JsonMembers}）时抛出，不写成 `\ud800` 这样的转义。
+   * `JSON.stringify(error)` 与缺省的 {@link writeJson} 不做这些核对，照旧写出
+   *
+   * @throws {@link FrameworkError} 写不出时，码为 `PRIMITIVES_VALIDATION_001`，`cause` 是 {@link writeJson} 抛出的 `TypeError`；
+   * 给出的不是 {@link ErrorInfo} 时码也是它
+   */
+  static write(error: ErrorInfo): string {
+    if (!(error instanceof ErrorInfo)) {
+      throw FrameworkError.invalidArgument("'ErrorInfo.write' needs an ErrorInfo.");
+    }
+    return writeWire(error, 'error');
+  }
+
+  /**
    * 从线上编码还原
    *
    * @remarks
@@ -243,9 +263,8 @@ export class ErrorInfo {
    *
    * @remarks
    * 空的 `details` 不写（RFC-0001「Result」）。细节里可以有 `bigint`、{@link Float64} 与非有限的浮点，
-   * 写成文本用 {@link writeJson}：`JSON.stringify` 写不出 `bigint`，也分不出整数与整数值的浮点。交给对方读的线上编码写成
-   * `writeJson(error, { loneSurrogates: 'reject', nesting: 'reject', duplicateMembers: 'reject' })`：文案或细节有孤立的代理项、
-   * 嵌套超过 64 层时抛 `TypeError`、不交出文本（RFC-0001「写出与转交」，ADR-0320）
+   * 写成文本用 {@link writeJson}：`JSON.stringify` 写不出 `bigint`，也分不出整数与整数值的浮点。交给对方读的线上编码用
+   * {@link ErrorInfo.write}：文案或细节有孤立的代理项、嵌套超过 64 层时抛出、不交出文本（RFC-0001「写出与转交」，ADR-0320、ADR-0340）
    */
   toJSON(): ErrorInfoJson {
     const json: {
@@ -299,6 +318,36 @@ function checkInner(inner: ErrorInfo | undefined): ErrorInfo | undefined {
     throw new FrameworkError(ErrorCode.InvalidArgument, 'The inner error must be an ErrorInfo.');
   }
   return inner;
+}
+
+/** 线上编码的写出选项：孤立的代理项、超过 64 层与重复的成员名写不出，非有限的浮点仍按值模型写成字符串 */
+const wireWriteOptions: JsonWriteOptions = Object.freeze({
+  loneSurrogates: 'reject',
+  nesting: 'reject',
+  duplicateMembers: 'reject',
+});
+
+/**
+ * 严格写出 {@link Result} 或 {@link ErrorInfo} 的线上编码（{@link ErrorInfo.write} 与 `Result.write` 共用）
+ *
+ * @remarks
+ * {@link writeJson} 写不出时抛 `TypeError`，换成 `PRIMITIVES_VALIDATION_001` 的 {@link FrameworkError}、原来的异常作 `cause`，
+ * 与 .NET `ResultJson` 抛 `ArgumentException`、Go SDK 返回同一个码的 `FrameworkError` 对齐；别的异常（如值自己的 `toJSON`
+ * 抛出的）不是写不出，原样传出
+ *
+ * @param what - 写进消息的对象：`result` 或 `error`
+ * @throws {@link FrameworkError} 写不出时
+ * @internal
+ */
+export function writeWire(value: object, what: 'result' | 'error'): string {
+  try {
+    return writeJson(value, wireWriteOptions);
+  } catch (error) {
+    if (error instanceof TypeError) {
+      throw FrameworkError.invalidArgument(`The ${what} cannot be written as JSON text.`, { cause: error });
+    }
+    throw error;
+  }
 }
 
 function copyDetails(details: JsonObject | undefined): JsonObject | undefined {

@@ -1,9 +1,9 @@
 import { ErrorCode } from './error-code.ts';
-import { ErrorInfo, type ErrorInfoJson } from './error-info.ts';
+import { ErrorInfo, type ErrorInfoJson, writeWire } from './error-info.ts';
 import { FrameworkError } from './framework.ts';
 import { isPlainObject, type JsonValue } from './json.ts';
 import { parseJson } from './json-text.ts';
-import { Maybe } from './maybe.ts';
+import { Maybe, MaybeBase } from './maybe.ts';
 
 /**
  * 成功或失败（RFC-0001 Result / Result&lt;T&gt;）：成功带值，失败带 {@link ErrorInfo}，二者互斥
@@ -12,10 +12,9 @@ import { Maybe } from './maybe.ts';
  * 判别字段是 `ok`：`if (result.ok) result.value` 即可收窄。成功值不能为 `null` 或 `undefined`；
  * 没有值的成功是 `Result<void>`，由 {@link Result.success} 创建。
  * 线上编码与 .NET 参考实现一致：`{"ok":true,"value":…}`、没有值时 `{"ok":true}`、失败 `{"ok":false,"error":{…}}`；
- * 写出用 {@link writeJson}（数字按值模型写，`JSON.stringify` 写不出 `bigint` 与整数值的浮点），从文本读取用 {@link Result.parse}。
- * 交给对方按 RFC-0001 读的线上编码写成 `writeJson(result, { loneSurrogates: 'reject', nesting: 'reject', duplicateMembers: 'reject' })`：
- * 字符串（文案、细节与成功值里的成员名与值）有孤立的代理项、从结果的根算起嵌套超过 64 层或有重复的成员名时抛 `TypeError`、
- * 不交出文本，不写成 `\ud800` 这样对方读不进的转义（RFC-0001「写出与转交」，ADR-0320）
+ * 交给对方按 RFC-0001 读的线上编码用 {@link Result.write} 写出：数字按值模型写（`JSON.stringify` 写不出 `bigint` 与整数值的浮点），
+ * 字符串有孤立的代理项、从结果的根算起嵌套超过 64 层或有重复的成员名时抛出、不交出文本，不写成 `\ud800` 这样对方读不进的转义
+ * （RFC-0001「写出与转交」，ADR-0320、ADR-0340）；从文本读取用 {@link Result.parse}
  */
 export type Result<T> = Ok<T> | Fail<T>;
 
@@ -82,7 +81,7 @@ export abstract class ResultBase<T> {
    * 线上编码（RFC-0001「Result」）：成功是 `ok` 与 `value`，没有值时只有 `ok`；失败是 `ok` 与 `error`
    *
    * @remarks
-   * 值原样交出，它自己的 `toJSON`（如 Maybe 的无值写成 `null`）由写出的一方调用。写成文本用 {@link writeJson}：
+   * 值原样交出，它自己的 `toJSON`（如 Maybe 的无值写成 `null`）由写出的一方调用。交给对方读的文本用 {@link Result.write}：
    * `JSON.stringify` 写不出 `bigint`，也分不出整数与整数值的浮点。线上编码的写法与写不出时的结果见 {@link Result}
    */
   toJSON(): { readonly ok: true; readonly value?: T } | { readonly ok: false; readonly error: ErrorInfoJson } {
@@ -205,6 +204,43 @@ export const Result = Object.freeze({
   },
 
   parse,
+
+  /**
+   * 严格写出线上编码：交给对方按 RFC-0001 读的结果用它
+   *
+   * @remarks
+   * 写出的文本与 {@link writeJson}`(result)` 相同（`{"ok":true,"value":…}`、`{"ok":true}`、`{"ok":false,"error":{…}}`，数字按值模型，
+   * 非有限的浮点写成字符串），不同的是对方读不进的不交出（RFC-0001「Result」与「写出与转交」，ADR-0320、ADR-0340）：
+   * - 字符串（文案、消息键、细节与成功值里的成员名与值，含内部错误的）有孤立的代理项，不写成 `\ud800` 这样的转义；
+   * - 从结果的根算起嵌套超过 64 层（成功值与错误的最外层是第 2 层），或任何一层有重复的成员名（{@link JsonMembers}）；
+   * - 有值的成功写不出值：值没有 JSON 表示（函数、symbol，或 `toJSON` 交出 `undefined`），或不是无值的 {@link Maybe} 却写成 `null`
+   *   （如 `toJSON` 交出 `null` 的无效 `Date`），对方会读成无值的成功、无值的 Maybe 或读不进。
+   *
+   * `JSON.stringify(result)` 与缺省的 {@link writeJson} 不做这些核对，照旧写出
+   *
+   * @throws {@link FrameworkError} 写不出时，码为 `PRIMITIVES_VALIDATION_001`，字符串、层数与成员名的问题以 {@link writeJson}
+   * 抛出的 `TypeError` 作 `cause`；给出的不是 {@link Result} 时码也是它
+   */
+  write(result: Result<unknown>): string {
+    if (!(result instanceof ResultBase)) {
+      throw FrameworkError.invalidArgument("'Result.write' needs a Result.");
+    }
+    const text = writeWire(result, 'result');
+    if (result.ok && result.value !== undefined) {
+      // 成功的线上编码只有 ok 与 value 两个成员、ok 在前：值写不出时整个 value 省略，读回来是无值的成功；
+      // 写成 null 时只有无值的 Maybe 是合法的，有值的 Maybe 写成 null 会读成无值
+      const missing = text === '{"ok":true}';
+      const absent = result.value instanceof MaybeBase && !result.value.hasValue;
+      if (missing || (text === '{"ok":true,"value":null}' && !absent)) {
+        throw FrameworkError.invalidArgument(
+          missing
+            ? 'The result cannot be written as JSON text: the value has no JSON representation.'
+            : 'The result cannot be written as JSON text: a value that may be absent must be a Maybe.',
+        );
+      }
+    }
+    return text;
+  },
 
   /**
    * 从 JSON 文本还原值类型为 Maybe 的结果；先过共同的 JSON 读取检查（见 {@link readJsonText}），其余规则同 {@link Result.fromJSONMaybe}

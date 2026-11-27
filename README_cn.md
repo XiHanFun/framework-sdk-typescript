@@ -58,7 +58,7 @@ import {
   type RequestShapeType,
 } from 'xihan-framework/operation';
 import { middleware, PipelineBuilder, Placement } from 'xihan-framework/pipeline';
-import { BaggageKey, ErrorInfo, PipelineStage, Result, writeJson } from 'xihan-framework/primitives';
+import { BaggageKey, ErrorInfo, PipelineStage, Result } from 'xihan-framework/primitives';
 
 // 请求的形状：调用器按它在文本顺序里核对载荷并构建请求（RFC-0011 规则 2）
 const CreateOrder = RequestShape.object({ quantity: RequestShape.required(RequestShape.int32()) });
@@ -89,8 +89,8 @@ const context = InvocationContext.create({ timeout: 2000, baggage: { [BaggageKey
 const response = await invoker.invoke(context, { id: 'orders.create', payload: '{"quantity":2}' });
 // response.outcome.ok === true，response.payload === '{"id":"o-t1","quantity":2}'
 const typed = await invoker.invokeTyped(context, createOrder, { quantity: 3 }); // Result<OrderCreated>
-// 线上编码：数字按值模型写，不用 JSON.stringify；写出对方读不进的文本时抛 TypeError
-const wire = writeJson(typed, { loneSurrogates: 'reject', nesting: 'reject', duplicateMembers: 'reject' });
+// 线上编码：数字按值模型写，不用 JSON.stringify；写出对方读不进的文本时抛 FrameworkError
+const wire = Result.write(typed);
 ```
 
 ## 文档

@@ -18,7 +18,7 @@
 - 导入 `xihan-framework/plugin` 之后，`ErrorInfo#message` 对 `plugins.*` 键给出英文文案：按文本匹配的地方改为按错误码或消息键
 - `Host.invoke` 的字符串载荷、`Host.publish` 信封的字符串 `data` 与处理器以字符串交回的应答严格编码成 UTF-8，有孤立的代理项时在本地失败、不发出（`kernel.operation.invalid_payload`、`messaging.envelope.invalid`、`kernel.invocation.unhandled_exception`）：要发出的文本先换成合法的字符串或 UTF-8 字节（ADR-0312、ADR-0315）
 - 操作的响应有孤立的代理项、嵌套超过 64 层或同一个对象里有重复成员时以 `KERNEL_UNEXPECTED_001` + `kernel.invocation.unhandled_exception` 失败、没有载荷：外部文本先用 `isWellFormed` / `toWellFormed` 核对或替换，`JsonMembers` 用不重复的名字（ADR-0318、ADR-0319）
-- `Result` 与 `ErrorInfo` 的线上编码改用 `writeJson(value, { loneSurrogates: 'reject', nesting: 'reject', duplicateMembers: 'reject' })`：有孤立代理项、从结果的根算起超过 64 层或重复成员时抛 `TypeError`，对方读不进的文本不再写出（ADR-0320）
+- 交给对方读的 `Result` 与 `ErrorInfo` 线上编码改用 `Result.write` / `ErrorInfo.write`：有孤立代理项、从结果的根算起超过 64 层、重复成员或有值的成功写不出值时抛 `FrameworkError`（`PRIMITIVES_VALIDATION_001`），对方读不进的文本不再写出；`JSON.stringify` 与缺省的 `writeJson` 照旧（ADR-0320、ADR-0340）
 - 已登记 Baggage 键的值有孤立的代理项时 `isBaggageValueAcceptable` 为假：外部输入丢弃这个成员，`withBaggage` 抛 `PRIMITIVES_VALIDATION_001`，从外部输入拼值之前先核对代理项成对（ADR-0321）
 
 ### 变更
@@ -27,6 +27,7 @@
 - **新增** `Envelope.dataSchema` 与 `DeliveredEnvelope.dataSchema`：发布与投递原样带上 CloudEvents `dataschema`（ADR-0305）
 - **新增** `PluginOptions.signal`、`PluginHookOptions` 与 `InvocationContext.withSignal`：调用方能停掉同进程里的插件，钩子与派生上下文接到取消信号
 - **新增** `new OperationRegistry({ capacity })`：登记表的容量可以在构造时给出
+- **新增** `Result.write` 与 `ErrorInfo.write`：严格写出线上编码，写不出即抛 `FrameworkError`、不交出文本（ADR-0340）
 - **新增** `JsonWriteOptions` 的 `loneSurrogates`、`nesting` 与 `duplicateMembers`，缺省不变（ADR-0318、ADR-0319）
 - **新增** `maxOperationIdLength`、`validateOperationId`、`validateMessageKey`、`Result.toJSON`、`FrameworkError.invalidArgument` 与 `fromErrorInfo`
 - **修复** 宿主写来的信封 `time` 读不出时投递以 `InvalidArgument` 拒绝；错误细节里的孤立代理项当作没有细节（ADR-0301、ADR-0306）

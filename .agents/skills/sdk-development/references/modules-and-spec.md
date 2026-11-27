@@ -23,7 +23,7 @@
 
 ## 常见对齐点
 
-- 线上 JSON：读取先过 `readJsonText` 的共同检查，写出用 `writeJson`；对象按文本顺序报错时用 `JsonMembers`，不转普通对象。
+- 线上 JSON：读取先过 `readJsonText` 的共同检查，写出用 `writeJson`，交给对方读的 Result 与错误用严格写出的 `Result.write` / `ErrorInfo.write`（ADR-0340）；对象按文本顺序报错时用 `JsonMembers`，不转普通对象。
 - 数字按值模型：整数、`bigint`、`Float64`、`JsonNumber` 的区分写在文档页「语言映射」。
 - 空白按 RFC-0001「空白字符」的 25 个码位，不用 `\s` 与 `trim`。
 - 正则整串匹配，不带 `m` 标志。
