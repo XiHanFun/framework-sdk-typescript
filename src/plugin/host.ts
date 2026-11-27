@@ -13,6 +13,7 @@ import {
   toBytes,
   toProtoEnvelope,
   toStrictUtf8,
+  unencodableBaggageKey,
 } from './conversion.ts';
 import {
   type CallbackRpc,
@@ -20,6 +21,7 @@ import {
   dataNotUtf8,
   GrpcCode,
   hostUnavailable,
+  loneSurrogateBaggageReason,
   mapCallbackStatus,
   PluginReason,
   payloadNotUtf8,
@@ -115,9 +117,10 @@ export function attachHost(context: InvocationContext, host: Host): void {
  * 发出之前在本地按宿主的顺序核对，与宿主给出同样的错误、不合即不发请求：所需权限既在清单 `permissions` 里、也在
  * `Configure` 的 `granted_permissions` 里，否则 `plugins.callback.denied`；上下文的 `xihan.tenant` 必须是插件此刻正在处理的
  * 某个调用或投递的租户，否则 `plugins.callback.tenant_denied`；上下文的截止时间已过或已被取消时也不发请求，结果与
- * 映射表的 `DeadlineExceeded`、「`Cancelled`，取消信号已触发」两行相同；最后，以字符串给出的 `Host.Invoke` 载荷编码不成 UTF-8
- * 时不发请求，`kernel.operation.invalid_payload`（ADR-0312），以字符串给出的信封 `data` 编码不成 UTF-8 的那一项不发出，
- * `messaging.envelope.invalid`（ADR-0315）。每次回调都在元数据 `xihan-plugin-session` 里带会话令牌，
+ * 映射表的 `DeadlineExceeded`、「`Cancelled`，取消信号已触发」两行相同；写进元数据 `baggage` 的已登记值有孤立的代理项时
+ * 不发请求，`PLUGINS_UNEXPECTED_001` + `plugins.process.failed`（`phase` 为操作 ID 或 `publish`，ADR-0347）；最后，以字符串给出的
+ * `Host.Invoke` 载荷编码不成 UTF-8 时不发请求，`kernel.operation.invalid_payload`（ADR-0312），以字符串给出的信封 `data`
+ * 编码不成 UTF-8 的那一项不发出，`messaging.envelope.invalid`（ADR-0315）。每次回调都在元数据 `xihan-plugin-session` 里带会话令牌，
  * 宿主以插件身份执行（主体 ID 为清单 ID）。连接是惰性的，第一次回调才建立
  */
 export class Host {
@@ -156,8 +159,8 @@ export class Host {
    * 元数据取自上下文：按 RFC-0003 写出的 traceparent、截止时间（UTC、七位小数）与已登记的 Baggage，`trace_state` 为空；
    * gRPC 调用的截止时间与上下文相同，调用方取消即取消回调。业务失败是宿主返回的 `Status.error`，按 invocation.md §3 的读入规则还原；
    * gRPC 失败按 invocation.md §5 的表换成原语层错误。字符串载荷在发出之前严格编码成 UTF-8：有孤立的代理项时不发请求，
-   * 结果是 `KERNEL_VALIDATION_001` + `kernel.operation.invalid_payload`（`id` 为操作 ID，`reason` 为 `$`），排在权限、租户与
-   * 截止时间的本地核对之后（ADR-0312）；字节载荷原样发出，由宿主核对
+   * 结果是 `KERNEL_VALIDATION_001` + `kernel.operation.invalid_payload`（`id` 为操作 ID，`reason` 为 `$`），排在权限、租户、
+   * 截止时间与元数据的本地核对之后（ADR-0312、ADR-0347）；字节载荷原样发出，由宿主核对
    *
    * @param payload - 请求的 JSON 文本或 UTF-8 字节；缺省为空，宿主按 `{}` 处理
    */
@@ -187,7 +190,8 @@ export class Host {
    *
    * @remarks
    * 批量：一次调用发出全部信封，结果与 `envelopes` 一一对应；空集合不发出调用、返回空数组，重复的信封照样逐项发出。
-   * 本地的权限与上下文租户核对、截止时间已过或已被取消、没有可用的回调端点都是整批的结果，每一项都是同一个错误。
+   * 本地的权限与上下文租户核对、截止时间已过或已被取消、元数据的 Baggage 有孤立的代理项（ADR-0347）、没有可用的回调端点
+   * 都是整批的结果，每一项都是同一个错误。
    * 整批的核对都通过之后逐项编码：以字符串给出的 `data` 严格编码成 UTF-8，有孤立的代理项的那一项不发出，结果是
    * `MESSAGING_VALIDATION_002` + `messaging.envelope.invalid`（`reason` 为 `the data has a lone surrogate and cannot be encoded as UTF-8`），
    * 其余各项照常组成一次请求，结果放回各自原来的位置；每一项都编码不成时不发请求（ADR-0315）。信封的 `xihantenant`
@@ -259,7 +263,8 @@ export class Host {
    * 发出之前的本地核对（invocation.md §5），依次：① 有没有可用的回调端点（由 {@link Host.#call} 先核对，它要拿端点去连）；
    * 按宿主的顺序 ② 权限、③ 上下文的租户；④ 上下文的截止时间已过或已被取消，结果与映射表相应的一行相同
    * （截止时间已过按 `DeadlineExceeded`，已被取消按「`Cancelled`，取消信号已触发」）。都通过时为 `undefined`；
-   * 之后 {@link Host.#call} 再准备请求（⑤ 载荷或信封的 `data` 编码成 UTF-8），客户端已经关闭的最后按连不上宿主
+   * 之后 {@link Host.#call} 再核对 ⑤ 元数据的 Baggage 编得成 UTF-8（ADR-0347）、准备请求（⑥ 载荷或信封的 `data` 编码成 UTF-8），
+   * 客户端已经关闭的最后按连不上宿主
    */
   #refusal(context: InvocationContext, rpc: CallbackRpc, operation: string, permission: string): ErrorInfo | undefined {
     if (!this.#permitted(permission)) {
@@ -307,6 +312,15 @@ export class Host {
     const refusal = this.#refusal(context, rpc, operation, permission);
     if (refusal !== undefined) {
       return Promise.resolve(Result.fail(refusal));
+    }
+    // 元数据排在截止时间之后、载荷与 data 的编码之前（ADR-0347）：权限、租户与截止时间是宿主会给出的错误，写不出请求是本地才有的；
+    // 元数据是整个请求共用的，Host.Publish 里它是整批的结果。不先核对时写出器经 TextEncoder 把孤立的代理项换成 U+FFFD 照发，
+    // 宿主收到的是另一个幂等键
+    const unencodable = unencodableBaggageKey(context);
+    if (unencodable !== undefined) {
+      return Promise.resolve(
+        Result.fail(processFailed(this.#pluginId, operation, loneSurrogateBaggageReason(unencodable))),
+      );
     }
     // 权限、租户与截止时间之后才准备请求：载荷编码不成相当于宿主在管道的 Validate 阶段才发现的错误，信封的 data 编码不成
     // 相当于宿主逐项转换信封时的错误，都排在整批的核对之后（ADR-0312、ADR-0315）

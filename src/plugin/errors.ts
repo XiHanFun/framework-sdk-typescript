@@ -76,6 +76,18 @@ export function dataNotUtf8(): ErrorInfo {
 }
 
 /**
+ * 写进回调元数据的已登记 Baggage 值有孤立的代理项时的 `reason`（invocation.md §5，ADR-0347）；不本地化
+ *
+ * @remarks
+ * 只点名键、不带值，与宿主写给插件的元数据（§2，ADR-0334）逐字相同
+ *
+ * @internal
+ */
+export function loneSurrogateBaggageReason(key: string): string {
+  return `baggage '${key}' has a lone surrogate and cannot be encoded as UTF-8`;
+}
+
+/**
  * `Host.Publish` 的结果数与发出的信封数不同时的 `reason`（invocation.md §5）
  *
  * @internal

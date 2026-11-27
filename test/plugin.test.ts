@@ -82,6 +82,7 @@ import {
   eventUnsubscribed,
   hostUnavailable,
   invalidErrorCodeReason,
+  loneSurrogateBaggageReason,
   mapCallbackStatus,
   PluginReason,
   processFailed,
@@ -719,6 +720,7 @@ test('运行时的消息键、参数、错误码、en-US 模板与固定的 reas
     `plugins.process.failed ${invalidErrorCodeReason('{code}')}`,
     `plugins.process.failed ${PluginReason.HostFailureWithoutError}`,
     `plugins.process.failed ${resultCountReason('{results}' as unknown as number, '{envelopes}' as unknown as number)}`,
+    `plugins.process.failed ${loneSurrogateBaggageReason('{key}')}`,
     `plugins.host.unavailable ${PluginReason.NoCallbackEndpoint}`,
   ]) {
     assert.ok(reasons.includes(reason), reason);
@@ -3034,6 +3036,76 @@ test('回调客户端关闭之后不发请求、不重新连接，排在载荷�
         [notEncoded, notEncoded],
       );
       assert.equal(host.received.length, before, 'nothing is sent once the callback client is closed');
+    } finally {
+      await plugin.close();
+    }
+  } finally {
+    host.close();
+  }
+});
+
+test('回调元数据里已登记的 Baggage 值有孤立的代理项即不发请求：plugins.process.failed，排在截止时间之后、载荷与 data 的编码与已关闭之前（invocation.md §5，ADR-0347）', async () => {
+  const host = await fakeHost({});
+  const high = String.fromCharCode(0xd83d);
+  const low = String.fromCharCode(0xde00);
+  const base = { topic: 'probe.events', source: 'urn:test', type: 'probe.happened' };
+  const reason = "baggage 'xihan.idempotency-key' has a lone surrogate and cannot be encoded as UTF-8";
+  const failed = (phase: string) => ({
+    code: 'PLUGINS_UNEXPECTED_001',
+    key: 'plugins.process.failed',
+    details: { id: pluginId, phase, reason },
+  });
+  const outcomes = (results: readonly Result<void>[]) =>
+    results.map((result) => (result.ok ? 'ok' : describeError(result.error)));
+  // 幂等键不按值的约束核对（conventions/baggage-keys.md），上下文里装得下孤立的代理项
+  const keyed = (value: string, deadline?: number) =>
+    InvocationContext.create({
+      baggage: { 'xihan.idempotency-key': value },
+      ...(deadline === undefined ? {} : { deadline }),
+    });
+  try {
+    const plugin = await launch({}, { XIHAN_PLUGIN_HOST_ADDRESS: host.address });
+    try {
+      await startPlugin(plugin.client);
+      await invoke(plugin.client, 'probes.context');
+      const callback = findHost(plugin.probe.lastContext as InvocationContext);
+      assert.ok(callback !== undefined);
+      // 单独的高代理项、单独的低代理项、颠倒的一对、末尾的高代理项
+      for (const value of [`a${high}b`, `${low}k`, `${low}${high}`, `k${high}`]) {
+        const invoked = await callback.invoke(keyed(value), 'orders.get', '{}');
+        assert.deepEqual(!invoked.outcome.ok && describeError(invoked.outcome.error), failed('orders.get'), value);
+        const published = await callback.publish(keyed(value), [
+          { ...base, id: 'a', data: '{}' },
+          { ...base, id: 'b', data: '{}' },
+        ]);
+        assert.deepEqual(outcomes(published), [failed('publish'), failed('publish')], value);
+      }
+      assert.equal(host.received.length, 0, 'a callback whose metadata cannot be written is not sent');
+
+      // 成对的代理项是平面以外的一个字符，照常发出，宿主收到的就是这个值
+      const paired = `k${high}${low}`;
+      assert.equal((await callback.invoke(keyed(paired), 'orders.get', '{}')).outcome.ok, true);
+      const sent = host.received.at(-1)?.request as pb.InvokeRequest;
+      assert.equal(sent.metadata?.baggage.get('xihan.idempotency-key'), paired);
+      const before = host.received.length;
+
+      // 截止时间先于元数据；元数据先于载荷与 data 的编码
+      const expired = await callback.invoke(keyed(`k${high}`, Date.now() - 1000), 'orders.get', '{}');
+      assert.equal(!expired.outcome.ok && expired.outcome.error.code, 'KERNEL_TIMEOUT_001');
+      const unencodable = await callback.invoke(keyed(`k${high}`), 'orders.get', `{"x":"${high}"}`);
+      assert.deepEqual(!unencodable.outcome.ok && describeError(unencodable.outcome.error), failed('orders.get'));
+      assert.deepEqual(
+        outcomes(await callback.publish(keyed(`k${high}`), [{ ...base, id: 'c', data: `{"x":"${high}"}` }])),
+        [failed('publish')],
+      );
+      // 已关闭排在元数据之后
+      callback.close();
+      const closed = await callback.invoke(keyed(`k${high}`), 'orders.get', '{}');
+      assert.deepEqual(!closed.outcome.ok && describeError(closed.outcome.error), failed('orders.get'));
+      assert.deepEqual(outcomes(await callback.publish(keyed(`k${high}`), [{ ...base, id: 'd', data: '{}' }])), [
+        failed('publish'),
+      ]);
+      assert.equal(host.received.length, before, 'nothing else is sent');
     } finally {
       await plugin.close();
     }

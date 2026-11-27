@@ -17,6 +17,7 @@
 - `Maybe#toJSON()` 对 `JsonNumber` 原样交出，`JSON.stringify(Maybe.some(jsonNumber))` 写成对象：线上编码用 `writeJson`
 - 导入 `xihan-framework/plugin` 之后，`ErrorInfo#message` 对 `plugins.*` 键给出英文文案：按文本匹配的地方改为按错误码或消息键
 - `Host.invoke` 的字符串载荷、`Host.publish` 信封的字符串 `data` 与处理器以字符串交回的应答严格编码成 UTF-8，有孤立的代理项时在本地失败、不发出（`kernel.operation.invalid_payload`、`messaging.envelope.invalid`、`kernel.invocation.unhandled_exception`）：要发出的文本先换成合法的字符串或 UTF-8 字节（ADR-0312、ADR-0315）
+- 回调上下文的幂等键有孤立的代理项时 `Host.invoke` 与 `Host.publish` 在本地以 `plugins.process.failed` 失败、不发出，原先换成 U+FFFD 照发：放进幂等键的文本先核对代理项成对（ADR-0347）
 - 操作的响应有孤立的代理项、嵌套超过 64 层或同一个对象里有重复成员时以 `KERNEL_UNEXPECTED_001` + `kernel.invocation.unhandled_exception` 失败、没有载荷：外部文本先用 `isWellFormed` / `toWellFormed` 核对或替换，`JsonMembers` 用不重复的名字（ADR-0318、ADR-0319）
 - 交给对方读的 `Result` 与 `ErrorInfo` 线上编码改用 `Result.write` / `ErrorInfo.write`：有孤立代理项、从结果的根算起超过 64 层、重复成员或有值的成功写不出值时抛 `FrameworkError`（`PRIMITIVES_VALIDATION_001`），对方读不进的文本不再写出；`JSON.stringify` 与缺省的 `writeJson` 照旧（ADR-0320、ADR-0340）
 - 已登记 Baggage 键的值有孤立的代理项时 `isBaggageValueAcceptable` 为假：外部输入丢弃这个成员，`withBaggage` 抛 `PRIMITIVES_VALIDATION_001`，从外部输入拼值之前先核对代理项成对（ADR-0321）

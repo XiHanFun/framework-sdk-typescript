@@ -323,6 +323,23 @@ export function metadataFromContext(context: InvocationContext): pb.InvocationMe
 }
 
 /**
+ * 写进回调元数据 `baggage` 的值里第一个有孤立代理项的键（invocation.md §5，ADR-0347）；都编码得成 UTF-8 时为 `undefined`
+ *
+ * @remarks
+ * 与 {@link metadataFromContext} 同一个来源（上下文里已登记的键），上下文里只有幂等键可能带着这样的值。逐个码元判定
+ * （RFC-0001「孤立的代理项」，与 {@link toStrictUtf8} 同一条规则），只看编不编得成 UTF-8，不按 Baggage 值的完整约束判定：
+ * 幂等键不受长度与控制字符的约束。几个键都是这样时规范不规定点名哪一个，这里按键名的码元顺序取第一个，只为结果确定
+ *
+ * @internal
+ */
+export function unencodableBaggageKey(context: InvocationContext): string | undefined {
+  const baggage = context.withoutUnregisteredBaggage().baggage;
+  return Object.keys(baggage)
+    .sort((left, right) => (left < right ? -1 : left > right ? 1 : 0))
+    .find((key) => toStrictUtf8(baggage[key] ?? '') === undefined);
+}
+
+/**
  * 一条 CloudEvents 1.0 消息（RFC-0009）：plugin.proto 的 `Envelope` 平铺成的属性
  */
 export interface Envelope {
